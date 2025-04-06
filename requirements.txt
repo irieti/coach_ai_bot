@@ -1,0 +1,8 @@
+opencv-python 
+tensorflow 
+numpy 
+matplotlib
+ultralytics
+openai
+python-telegram-bot
+celery-5.4.0

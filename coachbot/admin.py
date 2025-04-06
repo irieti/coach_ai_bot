@@ -1,43 +1,34 @@
 from django.contrib import admin
-from .models import Coach, Client, NutritionPlan, MuscleGroup, Exercise, TrainingProgram
+from .models import Coach, Subscription, Client, NutritionPlan, ChatMapping
 
 
+@admin.register(Coach)
 class CoachAdmin(admin.ModelAdmin):
-    search_fields = ["name", "telegram_id"]
-    list_display = ["name", "telegram_id"]
+    list_display = ("id", "name", "telegram_id", "field", "positioning")
+    search_fields = ("name", "telegram_id")
 
 
+@admin.register(Subscription)
+class SubscriptionAdmin(admin.ModelAdmin):
+    list_display = ("rebill_id", "coach", "status", "start_date", "expires_at")
+    list_filter = ("status", "payment_method")
+    search_fields = ("rebill_id", "coach__name")
+
+
+@admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
-    search_fields = ["name", "surname", "coach__name"]
-    list_display = ["name", "surname", "coach", "weight", "activity_level"]
-    list_filter = ["coach", "activity_level"]
+    list_display = ("id", "name", "surname", "coach", "goal", "calories")
+    list_filter = ("goal",)
+    search_fields = ("name", "surname", "coach__name")
 
 
+@admin.register(NutritionPlan)
 class NutritionPlanAdmin(admin.ModelAdmin):
-    search_fields = ["title", "client__name"]
-    list_display = ["title", "client", "created_at"]
+    list_display = ("id", "client", "title", "created_at")
+    search_fields = ("title", "client__name")
 
 
-class ExerciseAdmin(admin.ModelAdmin):
-    search_fields = ["title", "muscle_group__name"]
-    list_display = ["title", "muscle_group", "difficulty", "sets", "reps"]
-
-
-class TrainingProgramAdmin(admin.ModelAdmin):
-    search_fields = ["title", "client__name"]
-    list_display = ["title", "client", "created_at"]
-    list_filter = ["client"]
-
-
-class MuscleGroupAdmin(admin.ModelAdmin):
-    search_fields = ["name"]
-    list_display = ["name"]
-
-
-# Регистрируем модели с дополнительными настройками
-admin.site.register(Coach, CoachAdmin)
-admin.site.register(Client, ClientAdmin)
-admin.site.register(NutritionPlan, NutritionPlanAdmin)
-admin.site.register(MuscleGroup, MuscleGroupAdmin)
-admin.site.register(Exercise, ExerciseAdmin)
-admin.site.register(TrainingProgram, TrainingProgramAdmin)
+@admin.register(ChatMapping)
+class ChatMappingAdmin(admin.ModelAdmin):
+    list_display = ("telegram_id", "state")
+    search_fields = ("telegram_id",)
