@@ -113,6 +113,10 @@ NEW_CLIENT = 65
 SUB_HANDLER = 66
 CUSTOMER_EMAIL = 67
 CANCEL_SUB_HANDLER = 68
+REELS_PROMPT_HANDLER = 69
+REELS_CHANGE = 70
+REELS_GENERATION = 71
+NEW_CLIENT_NAME = 72
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -124,12 +128,12 @@ question = ""
 messages = [
     {
         "role": "system",
-        "content": "You are the nutritionist",
+        "content": "You are the nutritionist and coach marketing expert",
     }
 ]
 
-TINKOFF_PASSWORD = os.getenv("TINKOFF_SECRET_KEY")
-TINKOFF_TERMINAL_KEY = os.getenv("TINKOFF_TERMINAL_KEY")
+TINKOFF_PASSWORD = os.getenv("TINKOFF_PASSWORD")
+TINKOFF_TERMINAL_KEY = "1743522430515DEMO"
 
 stripe.api_key = os.getenv("STRIPE_API_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -166,29 +170,28 @@ async def set_bot_commands(application):
 
 
 def generate_signature(data):
+    print("generate signature func is started")
     """
     Функция для генерации подписи для запроса к Тинькофф согласно документации MAPI
     """
-    # 1. Создаем новый словарь с параметрами верхнего уровня
     values_to_encode = {}
+
     for key, value in data.items():
-        # Только параметры верхнего уровня, исключая вложенные объекты
         if not isinstance(value, (dict, list)):
-            values_to_encode[key] = str(value)
+            values_to_encode[key] = "" if value is None else str(value)
 
-    # 2. Добавляем пароль
-    values_to_encode["Password"] = (
-        TINKOFF_PASSWORD  # Пароль из личного кабинета мерчанта
-    )
+    values_to_encode["Password"] = TINKOFF_PASSWORD
+    print(f"password {TINKOFF_PASSWORD}")
 
-    # 3. Сортируем ключи по алфавиту
-    sorted_values = [values_to_encode[key] for key in sorted(values_to_encode.keys())]
+    sorted_keys = sorted(values_to_encode.keys())
+    sorted_values = [values_to_encode[key] for key in sorted_keys]
 
-    # 4. Конкатенируем значения
+    print(f"sorted_values:{sorted_values}")
+
     concatenated = "".join(sorted_values)
 
-    # 5. Применяем SHA-256
     token = hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
+    print(f"{token}")
 
     return token
 
@@ -214,8 +217,15 @@ def initiate_initial_payment(amount, telegram_id):
         "Recurrent": "Y",  # Mark as recurring payment
     }
     # Generate signature
+    print("request_data before signature:")
+    for k, v in request_data.items():
+        if isinstance(v, dict):
+            print(f"{k}: [dict]")
+        else:
+            print(f"{k}: {v} (type: {type(v)})")
     signature = generate_signature(request_data)
     request_data["Token"] = signature
+    print(f"{signature}")
     # Send request
     response = requests.post("https://securepay.tinkoff.ru/v2/Init", json=request_data)
     print(f"{response.status_code}")
@@ -783,8 +793,7 @@ async def sub_handler(update: Update, context: CallbackContext):
             subscription.amount, telegram_id
         )  # Здесь вызовите вашу функцию для запроса к Тинькофф
         await query.edit_message_text(
-            f'Перейдите по <a href="{payment_url}">ссылке для оплаты</a>.',
-            parse_mode="HTML",
+            f"Перейдите по следующей ссылке для оплаты: {payment_url}",
         )
 
     elif query.data == "world":
@@ -963,22 +972,27 @@ async def main_menu(update: Update, context: CallbackContext):
             ],
             [InlineKeyboardButton("Позиционирование", callback_data="3")],
             [InlineKeyboardButton("Создать идеи для контента", callback_data="4")],
-            [InlineKeyboardButton("Написать текст/сценарий", callback_data="5")],
+            [InlineKeyboardButton("Написать пост", callback_data="5")],
+            [InlineKeyboardButton("Написать текст для REELS", callback_data="6")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         text = (
-            "Что ты хочешь сделать?:)\n"
+            "<b>Что ты хочешь сделать?:)</b>\n"
             "Дисклеймер: не забывай, что бот — просто помощник. Он может допускать ошибки "
-            "и не несёт ответственность за результаты твоих клиентов. "
-            "Проверяй информацию перед тем, как передать её клиенту. "
-            "Выбери нужное действие из меню."
+            "и не несёт ответственность за результаты твоих клиентов.\n"
+            "Проверяй информацию перед тем, как передать её клиенту.\n"
+            "<b>Выбери нужное действие из меню.</b>"
         )
 
         if update.callback_query:
-            await query.edit_message_text(text, reply_markup=reply_markup)
+            await query.edit_message_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
+            )
         else:
-            await update.message.reply_text(text, reply_markup=reply_markup)
+            await update.message.reply_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
+            )
 
         return CHOOSING_ACTION
 
@@ -1062,12 +1076,42 @@ async def new_client(update: Update, context: CallbackContext):
     # Всё хорошо — продолжаем сценарий
     await update.message.reply_text("Введите имя нового клиента:")
     await update_chat_mapping(telegram_id, CLIENT_NAME, context.user_data)
-    return CLIENT_NAME
+    return NEW_CLIENT_NAME
+
+
+async def new_client_name(update: Update, context: CallbackContext):
+    telegram_id = context.user_data.get("telegram_id")
+    mapping = await get_chat_mapping(telegram_id)
+    if mapping and mapping.context:
+        context.user_data.update(mapping.context)
+        print(f"mapping found and restored: {mapping.state}")
+    else:
+        return MAIN_MENU
+    client_name = update.message.text.strip()
+    try:
+        coach, created = await sync_to_async(Coach.objects.get_or_create)(
+            telegram_id=telegram_id
+        )
+        new_client = await sync_to_async(Client.objects.create)(
+            name=client_name, coach=coach
+        )
+
+        context.user_data["selected_client_id"] = new_client.id
+        await update.message.reply_text(
+            f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:"
+        )
+        await update_chat_mapping(telegram_id, CLIENT_SURNAME, context.user_data)
+        return CLIENT_SURNAME
+    except Exception as e:
+        await update.message.reply_text("Произошла ошибка при добавлении клиента.")
+        logger.error(f"Ошибка создания клиента: {e}")
+        await update_chat_mapping(telegram_id, NEW_CLIENT, context.user_data)
+        return NEW_CLIENT
 
 
 async def choosing_action(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1077,11 +1121,8 @@ async def choosing_action(update: Update, context: CallbackContext):
     await query.answer()
     user_choice = query.data
 
-    # Store the telegram_id if not already stored
-    if "telegram_id" not in context.user_data:
-        context.user_data["telegram_id"] = query.from_user.id
-
     context.user_data["menu_action"] = user_choice
+    await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
 
     if user_choice in ["1", "2"]:
         keyboard = [
@@ -1101,6 +1142,7 @@ async def choosing_action(update: Update, context: CallbackContext):
     elif user_choice == "3":
         telegram_id = context.user_data.get("telegram_id")
         coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+        print(f"coach_positioning: {coach.positioning}")
         if coach.positioning:
             keyboard = [
                 [InlineKeyboardButton("Заполнить заново", callback_data="edit")],
@@ -1125,7 +1167,7 @@ async def choosing_action(update: Update, context: CallbackContext):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                "Тренером в каком направлении ты являешься?",
+                "<b>Тренером в каком направлении ты являешься?</b>",
                 reply_markup=reply_markup,
                 parse_mode="HTML",
             )
@@ -1161,17 +1203,60 @@ async def choosing_action(update: Update, context: CallbackContext):
             return COACH_FIELD
 
     elif user_choice == "5":
-        keyboard = [
-            [InlineKeyboardButton("Назад", callback_data="main_menu")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            "На какую тему будем делать текст? Постарайся подробно описать, что ты хочешь донести этим текстом, какую мысль или идею, а я помогу тебе со всем остальным!",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
-        await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
-        return TEXT_GENERATION
+        telegram_id = context.user_data.get("telegram_id")
+        coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+        if coach.positioning:
+            keyboard = [
+                [InlineKeyboardButton("Назад", callback_data="main_menu")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "<b>На какую тему будем делать текст?</b> Постарайся подробно описать, что ты хочешь донести этим текстом, какую мысль или идею, а я помогу тебе со всем остальным!\nМожешь использовать темы из контент-плана",
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
+            return TEXT_GENERATION
+        else:
+            keyboard = [
+                [InlineKeyboardButton("Назад", callback_data="main_menu")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "Чтобы сделать релевантный текст к посту, нужно сначала определиться с позиционированием.\nЭто быстро, всего несколько вопросов!\nТренером в каком направлении ты являешься?",
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            await update_chat_mapping(telegram_id, COACH_FIELD, context.user_data)
+            return COACH_FIELD
+
+    elif user_choice == "6":
+        telegram_id = context.user_data.get("telegram_id")
+        coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+        if coach.positioning:
+            keyboard = [
+                [InlineKeyboardButton("Назад", callback_data="main_menu")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "<b>На какую тему будем делать рилс?</b>\nЕсли нет идей - создай сначала контент-план (перейди в меню)",
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            await update_chat_mapping(telegram_id, REELS_GENERATION, context.user_data)
+            return REELS_GENERATION
+        else:
+            keyboard = [
+                [InlineKeyboardButton("Назад", callback_data="main_menu")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "Чтобы сделать релевантный текст к REELS, нужно сначала определиться с позиционированием.\nЭто быстро, всего несколько вопросов!\nТренером в каком направлении ты являешься?",
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            await update_chat_mapping(telegram_id, COACH_FIELD, context.user_data)
+            return COACH_FIELD
 
     await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
     return CHOOSING_ACTION
@@ -1179,7 +1264,7 @@ async def choosing_action(update: Update, context: CallbackContext):
 
 async def client_choice(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1226,7 +1311,7 @@ async def client_choice(update: Update, context: CallbackContext):
 
 
 async def client_name(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1256,7 +1341,6 @@ async def client_name(update: Update, context: CallbackContext):
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
             await update_chat_mapping(telegram_id, CLIENT_SELECTION, context.user_data)
-            await update_chat_mapping(telegram_id, CLIENT_SELECTION, context.user_data)
             return CLIENT_SELECTION
         else:
             await update.message.reply_text(
@@ -1266,20 +1350,19 @@ async def client_name(update: Update, context: CallbackContext):
             return CLIENT_NAME
 
     elif action == "add_client":
-        telegram_id = update.message.from_user.id
-        name = update.message.from_user.first_name or "Anonymous"
+        telegram_id = context.user_data.get("telegram_id")
 
         try:
             coach, created = await sync_to_async(Coach.objects.get_or_create)(
-                telegram_id=telegram_id, defaults={"name": name}
+                telegram_id=telegram_id
             )
             new_client = await sync_to_async(Client.objects.create)(
                 name=client_name, coach=coach
             )
 
-            context.user_data["selected_client"] = new_client
+            context.user_data["selected_client_id"] = new_client.id
             await update.message.reply_text(
-                f"Клиент {new_client.name} успешно добавлен! Введите фамилию клиента:"
+                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:"
             )
             await update_chat_mapping(telegram_id, CLIENT_SURNAME, context.user_data)
             return CLIENT_SURNAME
@@ -1296,8 +1379,9 @@ async def client_name(update: Update, context: CallbackContext):
 
 
 async def client_selection(update: Update, context: CallbackContext):
+    telegram_id = context.user_data.get("telegram_id")
+    print(f"Received update: {update}")
     query = update.callback_query
-    telegram_id = query.from_user.id
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1309,14 +1393,8 @@ async def client_selection(update: Update, context: CallbackContext):
     selected_client_id = query.data.split("_", 1)[1]
     logger.info(f"Пользователь выбрал клиента с ID: {selected_client_id}")
 
-    telegram_id = query.from_user.id
-    name = query.from_user.first_name or "Anonymous"
-    logger.info(f"Telegram ID тренера: {telegram_id}, Имя тренера: {name}")
-
     try:
-        coach = await sync_to_async(Coach.objects.get)(
-            telegram_id=telegram_id, name=name
-        )
+        coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
         logger.info(f"Тренер найден: {coach}")
 
         client = await sync_to_async(Client.objects.get)(
@@ -1325,7 +1403,7 @@ async def client_selection(update: Update, context: CallbackContext):
 
         if client:
             logger.info(f"Клиент найден: {client}")
-            context.user_data["selected_client"] = client
+            context.user_data["selected_client_id"] = client.id
             logger.info(f"context.user_data обновлен: {context.user_data}")
             plan_type = await client_action(update, context)
             print(f"plan_type: {plan_type}")
@@ -1356,8 +1434,31 @@ async def client_selection(update: Update, context: CallbackContext):
                 await update_chat_mapping(telegram_id, TRAINING_WEEK, context.user_data)
                 return TRAINING_WEEK
             elif plan_type == "menu":
+                required_fields = [
+                    client.name,
+                    client.weight,
+                    client.goal,
+                    client.calories,
+                    client.proteins,
+                    client.fats,
+                    client.carbs,
+                    client.yes_products,
+                    client.no_products,
+                ]
+
+                # Проверка на None или пустую строку
+                if any(field is None or field == "" for field in required_fields):
+                    await update.callback_query.edit_message_text(
+                        "Анкета клиента заполнена не до конца. Перейдите в список клиентов в меню и отредактируйте анкету клиента."
+                    )
+                    await update_chat_mapping(
+                        telegram_id, CHOOSING_ACTION, context.user_data
+                    )
+                    return MAIN_MENU
                 prompt = await creating_plan(update, context)
-                await update.callback_query.edit_message_text("Минутку! Составляю меню")
+                await update.callback_query.edit_message_text(
+                    "Минутку, составляю меню!🌀"
+                )
                 if prompt:
                     response = await generate_response(update, context)
                     if response:
@@ -1413,7 +1514,7 @@ async def client_selection(update: Update, context: CallbackContext):
 
 async def plan_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1465,7 +1566,8 @@ async def client_surname(update: Update, context: CallbackContext):
         print(f"mapping found and restored: {mapping.state}")
     else:
         return MAIN_MENU
-    client = context.user_data.get("selected_client")
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
     client.surname = update.message.text.strip()
     await sync_to_async(client.save)()
     await update.message.reply_text(f"Введите вес клиента:")
@@ -1483,9 +1585,10 @@ async def client_weight(update: Update, context: CallbackContext):
         return MAIN_MENU
     try:
         weight = float(update.message.text.strip())
-        selected_client = context.user_data["selected_client"]
-        selected_client.weight = weight
-        await sync_to_async(selected_client.save)()
+        client_id = context.user_data.get("selected_client_id")
+        client = await sync_to_async(Client.objects.get)(id=client_id)
+        client.weight = weight
+        await sync_to_async(client.save)()
 
         keyboard = [
             [InlineKeyboardButton("Низкий", callback_data="1.2")],
@@ -1520,9 +1623,10 @@ async def client_activity_level_choice(update: Update, context: CallbackContext)
     await query.answer()
 
     activity_level = query.data
-    selected_client = context.user_data["selected_client"]
-    selected_client.activity_level = activity_level
-    await sync_to_async(selected_client.save)()
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
+    client.activity_level = activity_level
+    await sync_to_async(client.save)()
 
     keyboard = [
         [InlineKeyboardButton("Похудение", callback_data="похудение")],
@@ -1551,9 +1655,10 @@ async def client_goal(update: Update, context: CallbackContext):
     await query.answer()
 
     goal = query.data
-    selected_client = context.user_data["selected_client"]
-    selected_client.goal = goal
-    await sync_to_async(selected_client.save)()
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
+    client.goal = goal
+    await sync_to_async(client.save)()
 
     await query.message.reply_text(
         "Есть ли у клиента аллергии? Введите продукты через запятую или напишите прочерк, если их нет:"
@@ -1571,9 +1676,10 @@ async def client_allergies(update: Update, context: CallbackContext):
     else:
         return MAIN_MENU
     allergies = update.message.text.strip()
-    selected_client = context.user_data["selected_client"]
-    selected_client.allergies = allergies
-    await sync_to_async(selected_client.save)()
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
+    client.allergies = allergies
+    await sync_to_async(client.save)()
 
     await update.message.reply_text(
         "Какие продукты обязательно должны присутствовать в рационе? Введите продукты через запятую или напишите прочерк:"
@@ -1591,14 +1697,15 @@ async def client_yes_products(update: Update, context: CallbackContext):
     else:
         return MAIN_MENU
     yes_products = update.message.text.strip()
-    selected_client = context.user_data["selected_client"]
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
 
     logger.info(f"Получены продукты, которые должны быть в рационе: {yes_products}")
 
-    selected_client.yes_products = yes_products
-    await sync_to_async(selected_client.save)()
+    client.yes_products = yes_products
+    await sync_to_async(client.save)()
 
-    logger.info(f"Данные о продуктах клиента {selected_client.name} успешно сохранены.")
+    logger.info(f"Данные о продуктах клиента {client.name} успешно сохранены.")
     await update.message.reply_text(
         "Какие продукты НЕ должны присутствовать в рационе? Введите продукты через запятую или напишите прочерк:"
     )
@@ -1608,7 +1715,7 @@ async def client_yes_products(update: Update, context: CallbackContext):
 
 
 async def client_no_products(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1616,15 +1723,16 @@ async def client_no_products(update: Update, context: CallbackContext):
     else:
         return MAIN_MENU
     no_products = update.message.text.strip().lower()
-    selected_client = context.user_data["selected_client"]
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
 
     logger.info(f"Получены продукты, которые не могут быть в рационе: {no_products}")
 
-    selected_client.no_products = no_products
-    await sync_to_async(selected_client.save)()
+    client.no_products = no_products
+    await sync_to_async(client.save)()
 
     logger.info(
-        f"Данные о запрещенных продуктах для клиента {selected_client.name} успешно сохранены."
+        f"Данные о запрещенных продуктах для клиента {client.name} успешно сохранены."
     )
     calories = await client_calories(update, context)
     if calories:
@@ -1696,12 +1804,13 @@ async def client_calories(update: Update, context: CallbackContext):
         print(f"mapping found and restored: {mapping.state}")
     else:
         return MAIN_MENU
-    selected_client = context.user_data["selected_client"]
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
 
-    weight = selected_client.weight
+    weight = client.weight
 
-    activity_level = selected_client.activity_level
-    goal = selected_client.goal
+    activity_level = client.activity_level
+    goal = client.goal
 
     calories = 24 * weight * float(activity_level)
     if goal == "похудение":
@@ -1715,16 +1824,16 @@ async def client_calories(update: Update, context: CallbackContext):
     fats = 1 * weight
     carbs = 1.7 * weight
 
-    selected_client.calories = calories
-    selected_client.proteins = proteins
-    selected_client.fats = fats
-    selected_client.carbs = carbs
-    await sync_to_async(selected_client.save)()
-    return selected_client.calories
+    client.calories = calories
+    client.proteins = proteins
+    client.fats = fats
+    client.carbs = carbs
+    await sync_to_async(client.save)()
+    return client.calories
 
 
 async def client_action(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1733,18 +1842,20 @@ async def client_action(update: Update, context: CallbackContext):
         return MAIN_MENU
     logger.info(f"client action function has started")
 
-    selected_client = context.user_data["selected_client"]
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
     menu_action = context.user_data.get("menu_action", None)
 
     if menu_action == "1":
-        context.user_data["client"] = selected_client
         context.user_data["plan_type"] = "menu"
         plan_type = "menu"
+        await update_chat_mapping(telegram_id, CLIENT_ACTION, context.user_data)
         return plan_type
 
     elif menu_action == "2":
         context.user_data["plan_type"] = "training"
         plan_type = "training"
+        await update_chat_mapping(telegram_id, CLIENT_ACTION, context.user_data)
         return plan_type
 
     else:
@@ -1757,7 +1868,7 @@ async def client_action(update: Update, context: CallbackContext):
 
 
 async def generate_response(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1776,7 +1887,7 @@ async def generate_response(update: Update, context: CallbackContext):
                     "content": prompt,
                 }
             ],
-            model="gpt-3.5-turbo",
+            model="gpt-4-turbo",
         )
 
         ChatGPT_reply = response.choices[0].message.content
@@ -1784,6 +1895,7 @@ async def generate_response(update: Update, context: CallbackContext):
         messages.append({"role": "assistant", "content": ChatGPT_reply})
 
         context.user_data["response"] = ChatGPT_reply
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
 
         response = ChatGPT_reply
 
@@ -1804,7 +1916,7 @@ async def generate_response(update: Update, context: CallbackContext):
 
 
 async def creating_plan(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1816,8 +1928,9 @@ async def creating_plan(update: Update, context: CallbackContext):
     plan_type = context.user_data.get("plan_type")
     """Создание меню или программы тренировок."""
     try:
-        selected_client = context.user_data.get("selected_client")
-        if not selected_client:
+        client_id = context.user_data.get("selected_client_id")
+        client = await sync_to_async(Client.objects.get)(id=client_id)
+        if not client_id:
             await update.message.reply_text(
                 "Данные клиента не найдены. Попробуйте снова."
             )
@@ -1829,25 +1942,27 @@ async def creating_plan(update: Update, context: CallbackContext):
         if plan_type == "menu":
             prompt = (
                 f"Создайте персонализированное меню для клиента с такими данными:\n"
-                f"Имя: {selected_client.name}\n"
-                f"Вес: {selected_client.weight} кг\n"
-                f"Цель: {selected_client.goal}\n"
-                f"Калории: {selected_client.calories} ккал\n"
-                f"Белки: {selected_client.proteins} г\n"
-                f"Жиры: {selected_client.fats} г\n"
-                f"Углеводы: {selected_client.carbs} г\n"
-                f"Включить в рацион: {selected_client.yes_products}\n"
-                f"Исключить из рациона: {selected_client.no_products}\n"
-                f"Аллергии: {selected_client.allergies if selected_client.allergies else 'Отсутствуют'}\n"
+                f"Имя: {client.name}\n"
+                f"Вес: {client.weight} кг\n"
+                f"Цель: {client.goal}\n"
+                f"Калории: {client.calories} ккал\n"
+                f"Белки: {client.proteins} г\n"
+                f"Жиры: {client.fats} г\n"
+                f"Углеводы: {client.carbs} г\n"
+                f"Включить в рацион: {client.yes_products}\n"
+                f"Исключить из рациона: {client.no_products}\n"
+                f"Аллергии: {client.allergies if client.allergies else 'Отсутствуют'}\n"
                 "Предложите 3 варианта рациона на неделю, разделив его на завтрак, обед, полдник и ужин.\n"
                 "Меню должно быть в формате маркеров (пункты меню), строго в соответствии с примером ниже, включая граммы для каждого продукта:\n"
                 "Пример: \n"
+                f"<b>Суточная норма калорий - {client.calories}</b>\n"
                 "<b>Вариант 1:</b> - <b>Завтрак:</b> омлет с овощами (2 яйца), овсянка с ягодами (100 г)\n"
                 "- <b>Обед:</b> куриная грудка (150 г) с рисом (100 г) и овощами (150 г)\n"
                 "- <b>Полдник:</b> яблоко (1 шт.), миндаль (20 г)\n"
                 "- <b>Ужин:</b> рыба на пару (150 г) с картофелем (200 г)\n"
                 "- <b>Вариант 2:...</b>\n"
             )
+            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         elif plan_type == "training":
             training_goal = context.user_data.get("training_goal")
             level = context.user_data.get("training_level")
@@ -1883,10 +1998,12 @@ async def creating_plan(update: Update, context: CallbackContext):
             Добавь рекомендации по технике выполнения и типичные ошибки, которые стоит избегать.  
             
             """
+            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
 
         logger.info(f"Prompt для {plan_type}: {prompt}")
         context.user_data["plan_type"] = plan_type
         context.user_data["prompt"] = prompt
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         prompt = prompt
         return prompt
 
@@ -1937,7 +2054,9 @@ async def menu_options(update: Update, context: CallbackContext):
                 await query.answer()
 
                 plan = context.user_data.get("response")
-                selected_client = context.user_data["selected_client"]
+                client_id = context.user_data.get("selected_client_id")
+                client = await sync_to_async(Client.objects.get)(id=client_id)
+
                 print(f"Plan: {plan}")
 
                 if not plan:
@@ -1949,8 +2068,8 @@ async def menu_options(update: Update, context: CallbackContext):
 
                 file_path = generate_plan_pdf(
                     plan_text=plan,
-                    client_name=selected_client.name,
-                    filename=f"{plan_type}_{selected_client.name}.pdf",
+                    client_name=client.name,
+                    filename=f"{plan_type}_{client.name}.pdf",
                 )
 
                 if file_path:
@@ -1989,7 +2108,7 @@ async def menu_options(update: Update, context: CallbackContext):
 
 
 async def edit_plan_comment(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2032,13 +2151,13 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
         await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
         return MENU_OPTIONS
 
-    context.user_data["edit_comment"] = user_comment
     prompt = (
         f"Вот текущий план для клиента: '{plan}'. "
         f"На основе следующего комментария обнови план: '{user_comment}'."
     )
     context.user_data["prompt"] = prompt
     response = await generate_response(update, context)
+    await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
 
     await update.message.reply_text("Минутку, составляю план!🌀")
     if response:
@@ -2049,14 +2168,13 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Store the current message for future reference
-        context.user_data["last_plan_message"] = await update.message.reply_text(
+        await update.message.reply_text(
             text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
             "Что вы хотели бы сделать с планом?",
             reply_markup=reply_markup,
             parse_mode="HTML",
         )
-        await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+        await update_chat_mapping(telegram_id, EDIT_PLAN_COMMENT, context.user_data)
         return MENU_OPTIONS
 
 
@@ -2098,24 +2216,7 @@ class PlanPDF(FPDF):
             (249, 89, 89),  # Coral
         ]
 
-        title = f"План"
-        title_width = self.get_string_width(title)
-        start_x = (210 - title_width) / 2
-
         self.set_font("DejaVu", "B", 24)
-
-        # Draw gradient title
-        segment_width = title_width / (len(colors) - 1)
-        for i in range(len(colors) - 1):
-            self.set_text_color(*colors[i])
-            segment = title[
-                int(i * len(title) / (len(colors) - 1)) : int(
-                    (i + 1) * len(title) / (len(colors) - 1)
-                )
-            ]
-            self.text(start_x + (i * segment_width), 20, segment)
-
-        self.ln(20)
 
     def footer(self):
         self.set_y(-15)
@@ -2163,6 +2264,11 @@ def generate_plan_pdf(
         filename: Output filename
     """
     try:
+        plans_folder = os.path.join(os.path.dirname(__file__), "plans")
+        os.makedirs(plans_folder, exist_ok=True)
+
+        file_path = os.path.join(plans_folder, filename)
+
         pdf = PlanPDF(client_name)
         pdf.add_page()
 
@@ -2200,8 +2306,8 @@ def generate_plan_pdf(
                 # For lines without colon (like exercise descriptions)
                 pdf.add_content_line(text, indent=True)
 
-        pdf.output(filename)
-        return filename
+        pdf.output(file_path)
+        return file_path
 
     except Exception as e:
         print(f"Error generating PDF: {str(e)}")
@@ -2212,7 +2318,7 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
     try:
         print("download_pdf function has started")
         query = update.callback_query
-        telegram_id = query.from_user.id
+        telegram_id = context.user_data.get("telegram_id")
         mapping = await get_chat_mapping(telegram_id)
         if mapping and mapping.context:
             context.user_data.update(mapping.context)
@@ -2223,7 +2329,9 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
         plan_type = context.user_data.get("plan_type")
 
         plan = context.user_data.get(plan_type)
-        selected_client = context.user_data["selected_client"]
+        client_id = context.user_data.get("selected_client_id")
+        client = await sync_to_async(Client.objects.get)(id=client_id)
+
         print(f"Plan: {plan}")
 
         if not plan:
@@ -2233,8 +2341,8 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
 
         file_path = generate_plan_pdf(
             plan_text=plan,
-            client_name=selected_client.name,
-            filename=f"{plan_type}_{selected_client.name}.pdf",
+            client_name=client.name,
+            filename=f"{plan_type}_{client.name}.pdf",
         )
 
         if file_path:
@@ -2261,7 +2369,7 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
 
 async def training_week(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2284,7 +2392,7 @@ async def training_week(update: Update, context: CallbackContext):
 
 
 async def handle_training_goal(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2321,7 +2429,7 @@ async def handle_training_goal(update: Update, context: CallbackContext):
 
 async def handle_muscle_group(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2360,7 +2468,7 @@ async def handle_muscle_group(update: Update, context: CallbackContext):
 
 async def workout_type(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2385,7 +2493,7 @@ async def workout_type(update: Update, context: CallbackContext):
 
 
 async def handle_training_type(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2425,7 +2533,7 @@ async def handle_training_type(update: Update, context: CallbackContext):
 ############################## POSITIONING ####################################
 async def get_positioning(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2436,7 +2544,9 @@ async def get_positioning(update: Update, context: CallbackContext):
 
     user_choice = query.data
     if user_choice == "edit":
-        await query.edit_message_text("Тренером в каком направлении ты являешься?")
+        await query.edit_message_text(
+            "<b>Тренером в каком направлении ты являешься?</b>", parse_mode="HTML"
+        )
         await update_chat_mapping(telegram_id, COACH_FIELD, context.user_data)
         return COACH_FIELD
     elif user_choice == "main_menu":
@@ -2445,7 +2555,7 @@ async def get_positioning(update: Update, context: CallbackContext):
 
 
 async def coach_field(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2458,14 +2568,15 @@ async def coach_field(update: Update, context: CallbackContext):
     coach.field = field
     context.user_data["field"] = field
     await update.message.reply_text(
-        "Расскажите про ваш подход к тренировкам/питанию? (Например: я придерживаюсь подхода, в котором без запретов и ограничений можно достичь правильных пищевых привычек через работу с психологией)"
+        "<b>Расскажите про ваш подход к тренировкам/питанию?</b>\n (Например: я придерживаюсь подхода, в котором без запретов и ограничений можно достичь правильных пищевых привычек через работу с психологией)",
+        parse_mode="HTML",
     )
     await update_chat_mapping(telegram_id, APPROACH, context.user_data)
     return APPROACH
 
 
 async def approach(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2474,13 +2585,15 @@ async def approach(update: Update, context: CallbackContext):
         return MAIN_MENU
     approach = update.message.text.strip()
     context.user_data["approach"] = approach
-    await update.message.reply_text("С какими запросами обычно к вам приходят клиенты?")
+    await update.message.reply_text(
+        "<b>С какими запросами обычно к вам приходят клиенты?</b>", parse_mode="HTML"
+    )
     await update_chat_mapping(telegram_id, REQUEST, context.user_data)
     return REQUEST
 
 
 async def request(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2490,14 +2603,15 @@ async def request(update: Update, context: CallbackContext):
     request = update.message.text.strip()
     context.user_data["request"] = request
     await update.message.reply_text(
-        "Опишите вашу целевую аудиторию. Старайтесь не брать всех, выделите клиентов по возрасту, деятельности, запросам. Например, молодые мамы 25-35 лет, восстановление после беременности. Или женщины 35-40 лет с запросом на похудение и восстановлению энергии"
+        "<b>Опишите вашу целевую аудиторию.</b>\n Старайтесь не брать всех, выделите клиентов по возрасту, деятельности, запросам. Например, молодые мамы 25-35 лет, восстановление после беременности. Или женщины 35-40 лет с запросом на похудение и восстановлению энергии",
+        parse_mode="HTML",
     )
     await update_chat_mapping(telegram_id, TARGET, context.user_data)
     return TARGET
 
 
 async def target_audience(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2506,13 +2620,16 @@ async def target_audience(update: Update, context: CallbackContext):
         return MAIN_MENU
     target_audience = update.message.text.strip()
     context.user_data["target_audience"] = target_audience
-    await update.message.reply_text("Какую основную услугу вы хотели бы предоставлять?")
+    await update.message.reply_text(
+        "<b>Какую основную услугу вы хотели бы предоставлять?</b>\n (например, тренировки по йоге в зале/онлайн-ведение клиентов",
+        parse_mode="HTML",
+    )
     await update_chat_mapping(telegram_id, PRODUCT, context.user_data)
     return PRODUCT
 
 
 async def product(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2522,14 +2639,15 @@ async def product(update: Update, context: CallbackContext):
     product = update.message.text.strip()
     context.user_data["product"] = product
     await update.message.reply_text(
-        "Вы хотите привлечь клиентов на онлайн или оффлайн направление?"
+        "<b>Вы хотите привлечь клиентов на онлайн или оффлайн направление?</b>",
+        parse_mode="HTML",
     )
     await update_chat_mapping(telegram_id, ONLINE, context.user_data)
     return ONLINE
 
 
 async def online(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2539,14 +2657,15 @@ async def online(update: Update, context: CallbackContext):
     online = update.message.text.strip()
     context.user_data["online"] = online
     await update.message.reply_text(
-        "Какие темы вам интересны помимо вашего основного направления (например, готовка, чтение, кино)?"
+        "<b>Какие темы вам интересны помимо вашего основного направления?</b>\n (например, готовка, чтение, кино)",
+        parse_mode="HTML",
     )
     await update_chat_mapping(telegram_id, FIELDS, context.user_data)
     return FIELDS
 
 
 async def fields(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2556,14 +2675,15 @@ async def fields(update: Update, context: CallbackContext):
     fields = update.message.text.strip()
     context.user_data["fileds"] = fields
     await update.message.reply_text(
-        "Как вы думаете, что еще получают от вашей услуги клиенты, помимо основного результата? Например, уверенность в себе, гармонию, энергию и тд"
+        "<b>Как вы думаете, что еще получают от вашей услуги клиенты, помимо основного результата?</b>\n Например, уверенность в себе, гармонию, энергию и тд",
+        parse_mode="HTML",
     )
     await update_chat_mapping(telegram_id, EFFECT, context.user_data)
     return EFFECT
 
 
 async def effect(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2615,12 +2735,14 @@ async def effect(update: Update, context: CallbackContext):
     Учитывай, что помимо {field} тренеру также интересны {fields}, и это можно использовать в контенте.  
     """
     context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
     await update.message.reply_text("Опрашиваю маркетологов, одну минутку!🌀")
     response = await generate_response(update, context)
     telegram_id = context.user_data.get("telegram_id")
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     if response:
         coach.positioning = response
+        await sync_to_async(coach.save)()
         context.user_data["response"] = response
         keyboard = [
             [InlineKeyboardButton("Редактировать", callback_data="edit_pos")],
@@ -2629,7 +2751,7 @@ async def effect(update: Update, context: CallbackContext):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_text(
-            f"Определил твое позиционирование, как тебе?\n{response}\nЧто хочешь сделать?",
+            f"<b>Определил твое позиционирование, как тебе?</b>\n{response}\nЧто хочешь сделать?",
             reply_markup=reply_markup,
             parse_mode="HTML",
         )
@@ -2639,7 +2761,7 @@ async def effect(update: Update, context: CallbackContext):
 
 async def positioning(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2653,7 +2775,7 @@ async def positioning(update: Update, context: CallbackContext):
 
     pos_choice = query.data
     if pos_choice == "edit_pos":
-        update.effective_chat.send_message("Что вы хотели бы изменить/добавить?")
+        await update.effective_chat.send_message("Что вы хотели бы изменить/добавить?")
         await update_chat_mapping(telegram_id, EDIT_POS_HANDLER, context.user_data)
 
         return EDIT_POS_HANDLER
@@ -2673,7 +2795,7 @@ async def positioning(update: Update, context: CallbackContext):
             ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        update.effective_chat.send_message(
+        await update.effective_chat.send_message(
             "Что хотите сделать дальше?", reply_markup=reply_markup, parse_mode="HTML"
         )
         await update_chat_mapping(telegram_id, SAVE_POS_HANDLER, context.user_data)
@@ -2681,7 +2803,7 @@ async def positioning(update: Update, context: CallbackContext):
 
 
 async def edit_pos_handler(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2689,7 +2811,6 @@ async def edit_pos_handler(update: Update, context: CallbackContext):
     else:
         return MAIN_MENU
     comment = update.message.text.strip()
-    telegram_id = context.user_data.get("telegram_id")
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     response = context.user_data.get("response")
     prompt = f"""
@@ -2716,7 +2837,7 @@ async def edit_pos_handler(update: Update, context: CallbackContext):
 
 async def save_pos_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2740,7 +2861,7 @@ async def save_pos_handler(update: Update, context: CallbackContext):
 
 
 async def social_media(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2758,7 +2879,7 @@ async def social_media(update: Update, context: CallbackContext):
 
 
 async def content_goal(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2767,6 +2888,7 @@ async def content_goal(update: Update, context: CallbackContext):
         return MAIN_MENU
     social_media = update.message.text.strip()
     context.user_data["social_media"] = social_media
+    await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
     keyboard = [
         [
             InlineKeyboardButton(
@@ -2777,7 +2899,7 @@ async def content_goal(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "Какая осноная цель у твоего контента на ближайшие 2-3 недели?",
+        "Какая основная цель у твоего контента на ближайшие 2-3 недели?",
         reply_markup=reply_markup,
     )
     await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
@@ -2786,7 +2908,7 @@ async def content_goal(update: Update, context: CallbackContext):
 
 async def content_prompt(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2828,18 +2950,21 @@ async def content_prompt(update: Update, context: CallbackContext):
 📅 <b>День 5 </b>– ...\n
 
 Продолжи этот формат, создавая уникальные темы на каждый день, учитывая боли, мечты и страхи аудитории.  
-Включи в контент-план разные форматы (посты, сторис, видео, карусели, лайвы) для максимального вовлечения.  
+Включи в контент-план разные форматы ( видео, карусели, подскасты) для максимального вовлечения. Контент должен быть направлен на привлечение подписчиков и набор аудитории - акцент на пользу и экспертность
 
 <b>Важно:</b>  
 - Указывай конкретные темы постов, а не просто "контент про боли аудитории".  
 - Подбирай темы, которые вызывают отклик и вовлекают подписчиков.  
+- Если контент в инстаграм - бери только(!) рилс и посты-карусели, если телеграм - посты, кружочки и аудиоподкасты, если ютуб - шортс и видео и тд)
 - Сделай план удобным для реализации, чтобы можно было сразу использовать его в работе.  
 """
 
         context.user_data["prompt"] = prompt
+        await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
         response = await generate_response(update, context)
         if response:
             context.user_data["content"] = response
+            await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
             keyboard = [
                 [InlineKeyboardButton("Да", callback_data="yes")],
                 [
@@ -2867,7 +2992,7 @@ async def content_prompt(update: Update, context: CallbackContext):
 
 async def content_prompt_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2882,13 +3007,13 @@ async def content_prompt_handler(update: Update, context: CallbackContext):
 
     content_change = query.data
     if content_change == "yes":
-        await query.edit_message_text("Что вы хотели бы добавить/изменить?")
+        await query.message.reply_text("Что вы хотели бы добавить/изменить?")
         await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
         return CONTENT_CHANGE
 
 
 async def content_change(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2900,9 +3025,11 @@ async def content_change(update: Update, context: CallbackContext):
 
     prompt = f"Это сгенерированный контент план для тренера {content}, скорректируй его на основе этого комментария {content_change}"
     context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
     response = await generate_response(update, context)
     if response:
         context.user_data["content"] = response
+        await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
         keyboard = [
             [InlineKeyboardButton("Да", callback_data="yes")],
             [
@@ -2924,7 +3051,7 @@ async def content_change(update: Update, context: CallbackContext):
 
 
 async def content_sales(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2966,14 +3093,16 @@ async def content_sales(update: Update, context: CallbackContext):
         <b>Важно:</b>  
         - Указывай конкретные темы для постов, а не просто "презентация продукта".  
         - Каждая тема должна работать с желаниями, страхами или возражениями аудитории.  
-        - Предложи разные форматы контента (видео, карусель, текстовый пост, сторис).  
+        - Предложи разные форматы контента (для инстаграма - только (!) рилс и посты-карусели, для телеграма - посты, кружочки и аудмоподкасты и тд).  
 
         Составь этот контент-план в понятном формате, чтобы его можно было сразу использовать в работе.  
         """
     context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
     response = await generate_response(update, context)
     if response:
         context.user_data["content"] = response
+        await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
         keyboard = [
             [InlineKeyboardButton("Да", callback_data="yes")],
             [
@@ -2998,7 +3127,7 @@ async def content_sales(update: Update, context: CallbackContext):
 
 
 async def text_generation(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3006,12 +3135,39 @@ async def text_generation(update: Update, context: CallbackContext):
     else:
         return MAIN_MENU
     text_idea = update.message.text.strip()
-    prompt = f"Ты - профессиональный маркетолог. На эту тему {text_idea} нужно написать подробный пост (инстаграм/телеграм) со следующей структурой: обязательно сначала опиши проблему потенциального клиента тренера с цепляющим заголовком, затем - разбери проблемы с точки зрения того, что чувствует клиент, затем - что будет, если клиент не решит эту проблему, затем, как решение изменит его жизнь, дай несколько советов, которые можно применить прямо сейчас, а дальше призыв к действию - запишись ко мне на бесплатную консультацию и мы подберем иделаьное решение для тебя. Постарайся достучаться до эмоций читателя, говорить естественным языком, как бы обращаясь к читателю"
+    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+    field = coach.field
+    positioning = coach.positioning
+    prompt = f"""
+Ты — маркетолог, пишущий вовлекающие и продающие тексты для тренеров.
+
+Создай подробный пост для Instagram/Telegram по теме: {text_idea}  
+Специализация тренера: {field}  
+Позиционирование и ЦА: {positioning}
+
+Структура поста:
+
+1. <b>Цепляющий заголовок</b> — без «всем привет», сразу в суть боли клиента.
+2. <b>Описание проблемы</b>, с которой сталкивается клиент, с фокусом на его внутренние ощущения и переживания.
+3. <b>Что будет, если проблему не решить</b> — возможные негативные сценарии, чтобы усилить мотивацию.
+4. <b>Как решение изменит жизнь клиента</b> — результат в формате «после».
+5. <b>Полезные советы</b>, которые клиент может применить прямо сейчас (2–3 штуки).
+6. <b>Призыв к действию</b>: запишись ко мне на бесплатную консультацию, и мы подберем идеальное решение для тебя.
+
+Требования:
+- Без хештегов и смайликов.
+- Пиши живым, современным языком, как будто ты обращаешься напрямую к читателю.
+- Не используй формальности и клише.
+- Текст должен быть цельным, глубоким и сразу готовым к публикации.
+- Используй <b> вместо ***
+"""
     context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
     await update.message.reply_text("Минутку! Опрашиваю тысячу копирайтеров!🌀")
     response = await generate_response(update, context)
     if response:
         context.user_data["text"] = response
+        await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
         keyboard = [
             [InlineKeyboardButton("Да", callback_data="yes")],
             [
@@ -3036,7 +3192,7 @@ async def text_generation(update: Update, context: CallbackContext):
 
 async def text_prompt_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3053,7 +3209,7 @@ async def text_prompt_handler(update: Update, context: CallbackContext):
 
 
 async def text_change(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3064,10 +3220,12 @@ async def text_change(update: Update, context: CallbackContext):
     text = context.user_data.get("text")
     prompt = f"Это сгенерированный текст пользователя {text}, измени его с учетом следубщих комментариев {text_change} и сделай снова три варианта меню"
     context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
     await update.message.reply_text("Минутку! Снова опрашиваю тысячу копирайтеров!🌀")
     response = await generate_response(update, context)
     if response:
         context.user_data["text"] = response
+        await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
         keyboard = [
             [InlineKeyboardButton("Да", callback_data="yes")],
             [
@@ -3084,6 +3242,127 @@ async def text_change(update: Update, context: CallbackContext):
         )
         await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
         return TEXT_PROMPT_HANDLER
+    else:
+        await update.message.reply_text("Произошла ошибка, попробуйте снова")
+        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+        return MAIN_MENU
+
+
+async def reels_generation(update: Update, context: CallbackContext):
+    telegram_id = context.user_data.get("telegram_id")
+    print(f"{telegram_id}")
+    mapping = await get_chat_mapping(telegram_id)
+    if mapping and mapping.context:
+        context.user_data.update(mapping.context)
+        print(f"mapping found and restored: {mapping.state}")
+    else:
+        return MAIN_MENU
+    text_idea = update.message.text.strip()
+    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+    field = coach.field
+    positioning = coach.positioning
+    prompt = f"""
+Ты — маркетолог, помогающий тренерам создавать продающий и вовлекающий контент.
+
+Создай текст для Reels в Instagram для тренера по {field}.  
+Его позиционирование и целевая аудитория: {positioning}.  
+Тема Reels: {text_idea}.
+
+Требования к тексту:
+- Используй формат "говорящей головы".
+- Начни с <b>цепляющего заголовка</b> — без «привет, друзья», сразу к сути.
+- Покажи <b>проблему</b>, с которой сталкивается клиент.
+- Дай <b>простое решение</b>, которое можно внедрить сразу.
+- Сделай <b>призыв к действию</b>: подписаться на аккаунт или написать в директ.
+- Пиши <b>живым, современным языком</b>, без штампов и формальных фраз.
+- Используй <b> вместо ***
+- Без хештегов и смайликов
+
+Финальный текст должен быть структурирован и легко читаем.
+
+"""
+
+    context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, REELS_GENERATION, context.user_data)
+    await update.message.reply_text("Минутку! Опрашиваю тысячу рилсмейкеров!🌀")
+    response = await generate_response(update, context)
+    if response:
+        context.user_data["text"] = response
+        await update_chat_mapping(telegram_id, REELS_GENERATION, context.user_data)
+        keyboard = [
+            [InlineKeyboardButton("Да", callback_data="yes")],
+            [
+                InlineKeyboardButton(
+                    "Нет, вернуться в главное меню", callback_data="main_menu"
+                )
+            ],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"Вот ваш текст для рилс:\n {response}.\n<b>Хотите добавить что-то еще?</b>",
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+        await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
+        return REELS_PROMPT_HANDLER
+    else:
+        await update.message.reply_text("Произошла ошибка, попробуйте снова")
+        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+        return MAIN_MENU
+
+
+async def reels_prompt_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    telegram_id = context.user_data.get("telegram_id")
+    mapping = await get_chat_mapping(telegram_id)
+    if mapping and mapping.context:
+        context.user_data.update(mapping.context)
+        print(f"mapping found and restored: {mapping.state}")
+    else:
+        return MAIN_MENU
+    await query.answer()
+
+    text_change = query.data
+    if text_change == "yes":
+        await query.edit_message_text("Что вы хотели бы добавить/изменить?")
+        await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
+        return REELS_CHANGE
+
+
+async def reels_change(update: Update, context: CallbackContext):
+    telegram_id = context.user_data.get("telegram_id")
+    mapping = await get_chat_mapping(telegram_id)
+    if mapping and mapping.context:
+        context.user_data.update(mapping.context)
+        print(f"mapping found and restored: {mapping.state}")
+    else:
+        return MAIN_MENU
+    text_change = update.message.text.strip()
+    text = context.user_data.get("text")
+    prompt = f"Это сгенерированный текст пользователя {text}, измени его с учетом следубщих комментариев {text_change}"
+    context.user_data["prompt"] = prompt
+    await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
+    await update.message.reply_text("Минутку! Снова опрашиваю тысячу рилсмейкеров!🌀")
+    response = await generate_response(update, context)
+    if response:
+        context.user_data["text"] = response
+        await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
+        keyboard = [
+            [InlineKeyboardButton("Да", callback_data="yes")],
+            [
+                InlineKeyboardButton(
+                    "Нет, вернуться в главное меню", callback_data="main_menu"
+                )
+            ],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"Вот ваш текст для рилс: {response}.\n<b>Хотите добавить что-то еще?</b>",
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+        await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
+        return REELS_PROMPT_HANDLER
     else:
         await update.message.reply_text("Произошла ошибка, попробуйте снова")
         await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
@@ -3218,7 +3497,7 @@ async def get_clients(update: Update, context: CallbackContext):
 
 async def clients_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3234,7 +3513,7 @@ async def clients_handler(update: Update, context: CallbackContext):
     client = await sync_to_async(Client.objects.get)(id=selected_client_id, coach=coach)
 
     if client:
-        context.user_data["selected_client"] = client
+        context.user_data["selected_client_id"] = client.id
         message = (
             f"<b>1. Имя:</b> {client.name}\n"
             f"<b>2. Фамилия:</b> {client.surname}\n"
@@ -3256,7 +3535,7 @@ async def clients_handler(update: Update, context: CallbackContext):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"Что хотели бы сделать с анкетой? {message}",
+            f"Что хотели бы сделать с анкетой?\n {message}",
             reply_markup=reply_markup,
             parse_mode="HTML",
         )
@@ -3266,7 +3545,7 @@ async def clients_handler(update: Update, context: CallbackContext):
 
 async def edit_client(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3274,7 +3553,8 @@ async def edit_client(update: Update, context: CallbackContext):
     else:
         return GET_CLIENTS
     await query.answer()
-    selected_client = context.user_data.get("selected_client")
+    client_id = context.user_data.get("selected_client_id")
+
     edit_client_choice = query.data
     if edit_client_choice == "edit_client":
         keyboard = [
@@ -3304,7 +3584,7 @@ async def edit_client(update: Update, context: CallbackContext):
         return EDIT_CLIENT_DATA_HANDLER
 
     elif edit_client_choice == "delete":
-        client = await sync_to_async(Client.objects.get)(id=selected_client.id)
+        client = await sync_to_async(Client.objects.get)(id=client_id)
         await sync_to_async(client.delete)()
         keyboard = [
             [
@@ -3332,7 +3612,7 @@ async def edit_client(update: Update, context: CallbackContext):
 
 async def edit_client_data_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3393,7 +3673,7 @@ async def edit_client_data_handler(update: Update, context: CallbackContext):
 
 
 async def client_data_msg(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3402,9 +3682,10 @@ async def client_data_msg(update: Update, context: CallbackContext):
         return GET_CLIENTS
 
     client_choice = context.user_data.get("client_data_choice")
-    selected_client = context.user_data.get("selected_client")
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
+
     client_data = update.message.text.strip()
-    client = await sync_to_async(Client.objects.get)(id=selected_client.id)
 
     if client_choice == "name":
         client.name = client_data
@@ -3446,7 +3727,7 @@ async def client_data_msg(update: Update, context: CallbackContext):
 
 async def client_data_query(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3455,9 +3736,10 @@ async def client_data_query(update: Update, context: CallbackContext):
         return GET_CLIENTS
     await query.answer()
     client_choice = context.user_data.get("client_data_choice")
-    selected_client = context.user_data.get("selected_client")
+    client_id = context.user_data.get("selected_client_id")
+    client = await sync_to_async(Client.objects.get)(id=client_id)
+
     client_data = query.data
-    client = await sync_to_async(Client.objects.get)(id=selected_client.id)
 
     if client_choice == "activity":
         client.activity_level = client_data
@@ -3501,7 +3783,7 @@ async def education(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "У нас есть полноценное обучение для тренеров, которые хотят работать онлайн. Унать подробности можно по <a href='https://www.basetraining.site/academy'>этой ссылке</a>",
+        "Ты можешь прийти на наш <a href='https://t.me/free_coach_course_bot'>бесплатный курс</a>. А еще нас есть полноценное обучение для тренеров, которые хотят работать онлайн. Унать подробности можно по <a href='https://www.basetraining.site/academy'>этой ссылке</a>",
         reply_markup=reply_markup,
         parse_mode="HTML",
     )
@@ -3600,7 +3882,7 @@ def main():
                 CallbackQueryHandler(choosing_action, pattern="^[12345]$"),
             ],
             CHOOSING_ACTION: [
-                CallbackQueryHandler(choosing_action, pattern="^[12345]$"),
+                CallbackQueryHandler(choosing_action, pattern="^[123456]$"),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             CLIENT_CHOICE: [
@@ -3612,6 +3894,10 @@ def main():
             NEW_CLIENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_client)],
             CLIENT_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, client_name),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+            ],
+            NEW_CLIENT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, new_client_name),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             CLIENT_SELECTION: [
@@ -3787,6 +4073,18 @@ def main():
             ],
             CANCEL_SUB_HANDLER: [
                 CallbackQueryHandler(cancel_subscription_handler),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+            ],
+            REELS_PROMPT_HANDLER: [
+                CallbackQueryHandler(reels_prompt_handler),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+            ],
+            REELS_CHANGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, reels_change),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+            ],
+            REELS_GENERATION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, reels_generation),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
         },
