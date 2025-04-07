@@ -823,7 +823,7 @@ async def customer_email(update: Update, context: CallbackContext):
     if choice == "month_3000":
         subscription.amount = 30
         subscription.duration_days = 30
-        price_id = "price_1RAdFNAnFE16axxxe4mtTnTm"
+        price_id = "price_1R1rEjAnFE16axxx9nhRX3dn"
     elif choice == "3month_2300":
         subscription.amount = 69
         subscription.duration_days = 90
@@ -883,7 +883,9 @@ async def cancel_subscription_handler(update: Update, context: CallbackContext):
 
     try:
         # Получаем подписку клиента
-        subscription = await sync_to_async(Subscription.objects.get)(customer_key=telegram_id)
+        subscription = await sync_to_async(Subscription.objects.get)(
+            customer_key=telegram_id
+        )
     except Subscription.DoesNotExist:
         await query.answer()
         await query.edit_message_text("Подписка не найдена.")
@@ -901,25 +903,34 @@ async def cancel_subscription_handler(update: Update, context: CallbackContext):
             if subscription.payment_method == "tinkoff":
                 subscription.status = "pending_cancellation"
                 await sync_to_async(subscription.save)()
-                await query.edit_message_text("Ваша подписка отменена. Она будет завершена в конце текущего периода.")
+                await query.edit_message_text(
+                    "Ваша подписка отменена. Она будет завершена в конце текущего периода."
+                )
 
             # Обработка отмены подписки для Stripe
             elif subscription.payment_method == "stripe":
                 try:
                     stripe.Subscription.modify(
-                        subscription.subscription_id,
-                        cancel_at_period_end=True
+                        subscription.subscription_id, cancel_at_period_end=True
                     )
                     subscription.status = "pending_cancellation"
                     await sync_to_async(subscription.save)()
-                    await query.edit_message_text("Ваша подписка отменена. Она будет завершена в конце текущего периода.")
+                    await query.edit_message_text(
+                        "Ваша подписка отменена. Она будет завершена в конце текущего периода."
+                    )
                 except stripe.error.StripeError as e:
-                    logger.error(f"Ошибка при отмене подписки через Stripe: {e.user_message}")
-                    await query.edit_message_text("Ошибка при отмене подписки через Stripe. Попробуйте позже.")
+                    logger.error(
+                        f"Ошибка при отмене подписки через Stripe: {e.user_message}"
+                    )
+                    await query.edit_message_text(
+                        "Ошибка при отмене подписки через Stripe. Попробуйте позже."
+                    )
 
         except Exception as e:
             logger.error(f"Ошибка при отмене подписки: {e}")
-            await query.edit_message_text("Произошла ошибка при отмене подписки. Попробуйте снова.")
+            await query.edit_message_text(
+                "Произошла ошибка при отмене подписки. Попробуйте снова."
+            )
     elif user_choice == "main_menu":
         await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
         return MAIN_MENU
