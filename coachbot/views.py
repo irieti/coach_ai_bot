@@ -2117,6 +2117,7 @@ async def menu_options(update: Update, context: CallbackContext):
                 await query.message.reply_text(
                     "Произошла ошибка при обработке запроса."
                 )
+                logger.error(f'error:{e}')
                 await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
                 return MAIN_MENU
 
