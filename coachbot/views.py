@@ -253,6 +253,7 @@ def initiate_initial_payment(amount, telegram_id):
 
 @csrf_exempt
 def tinka_webhook(request):
+    logger.info("Webhook received")
     print("Webhook received")
     if request.method != "POST":
         print("Method not allowed")
@@ -260,11 +261,11 @@ def tinka_webhook(request):
 
     try:
         data = json.loads(request.body)
-        print(f"Webhook data received: {data}")
+        logger.info(f"Webhook data received: {data}")
 
         # Get token from data
         token = data.get("Token")
-        print(f"Token received: {token}")
+        logger.info(f"Token received: {token}")
 
         # Verify signature (but allow processing even if verification fails during testing)
         is_valid = verify_signature(data, token)
@@ -283,7 +284,7 @@ def tinka_webhook(request):
         order_id = data.get("OrderId")
         rebill_id = data.get("RebillId")
 
-        print(
+        logger.info(
             f"Status: {status}, PaymentId: {payment_id}, OrderId: {order_id}, RebillId: {rebill_id}"
         )
 
@@ -461,6 +462,7 @@ def verify_signature(data, received_token):
     Verify Tinkoff payment notification signature according to their documentation
     with improved debugging and handling of different data types
     """
+    logger.info("started verifying")
     # Create a copy of the data without the Token field
     data_copy = {
         k: v for k, v in data.items() if k != "Token" and k not in ["Receipt", "DATA"]
@@ -468,12 +470,14 @@ def verify_signature(data, received_token):
 
     # Add password
     data_copy["Password"] = TINKOFF_PASSWORD
+    logger.info(f"T PASSWORD{TINKOFF_PASSWORD}")
 
     # Convert all values to strings with special handling for booleans
     data_copy = {
         k: "true" if v is True else "false" if v is False else str(v)
         for k, v in data_copy.items()
     }
+    logger.info(f"data_copy {data_copy}")
 
     # Print the prepared data for debugging
     print("Prepared data for signature calculation:")
@@ -482,17 +486,18 @@ def verify_signature(data, received_token):
 
     # Sort alphabetically by key
     sorted_values = [data_copy[key] for key in sorted(data_copy.keys())]
+    logger.info(f"sorted_values: {sorted_values}")
 
     # Concatenate all values
     concat_string = "".join(sorted_values)
-    print(f"Concatenated string: {concat_string}")
+    logger.info(f"Concatenated string: {concat_string}")
 
     # Apply SHA-256 hash function
     import hashlib
 
     calculated_token = hashlib.sha256(concat_string.encode("utf-8")).hexdigest()
-    print(f"Calculated token: {calculated_token}")
-    print(f"Received token: {received_token}")
+    logger.info(f"Calculated token: {calculated_token}")
+    logger.info(f"Received token: {received_token}")
 
     # Compare with the received token
     return calculated_token.lower() == received_token.lower()
