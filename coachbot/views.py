@@ -1929,6 +1929,8 @@ async def creating_plan(update: Update, context: CallbackContext):
         prompt = ""
 
         if plan_type == "menu":
+            client.calories = await client_calories(update, context)
+            logger.info(f"calories: {client.calories}")
             prompt = (
                 f"Создайте персонализированное меню для клиента с такими данными:\n"
                 f"Имя: {client.name}\n"
