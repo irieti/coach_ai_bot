@@ -43,6 +43,7 @@ import asyncio
 from django.http import HttpResponse
 import traceback
 from celery import shared_task
+from .tasks import generate_openai_response_task
 
 load_dotenv()
 
