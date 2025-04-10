@@ -2117,7 +2117,7 @@ async def menu_options(update: Update, context: CallbackContext):
                 await query.message.reply_text(
                     "Произошла ошибка при обработке запроса."
                 )
-                logger.error(f'error:{e}')
+                logger.error(f"error:{e}")
                 await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
                 return MAIN_MENU
 
@@ -2215,7 +2215,9 @@ class PlanPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=15)
 
         # Set the font path - using a relative path is safer
-        font_path = os.path.join(os.path.dirname(__file__), "static", "fonts")
+        font_path = (
+            "/var/www/django_telegram_bot/coach_ai_bot/coachbot/staticfiles/fonts"
+        )
 
         # Add DejaVu fonts with Unicode support
         self.add_font(
