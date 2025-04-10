@@ -731,7 +731,7 @@ async def subscription(update: Update, context: CallbackContext):
 
 async def sub_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -810,7 +810,7 @@ async def sub_handler(update: Update, context: CallbackContext):
 
 async def customer_email(update: Update, context: CallbackContext):
     customer_email = update.message.text.strip()
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -847,6 +847,7 @@ async def customer_email(update: Update, context: CallbackContext):
 
 async def cancel_subscription(update: Update, context: CallbackContext):
     telegram_id = update.message.from_user.id
+    context.user_data["telegram_id"] = telegram_id
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -876,7 +877,7 @@ async def cancel_subscription(update: Update, context: CallbackContext):
 
 async def cancel_subscription_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
 
     # Получение данных о клиенте
     mapping = await get_chat_mapping(telegram_id)
@@ -1583,7 +1584,7 @@ async def plan_handler(update: Update, context: CallbackContext):
 
 
 async def client_surname(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1600,7 +1601,7 @@ async def client_surname(update: Update, context: CallbackContext):
 
 
 async def client_weight(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1669,7 +1670,7 @@ async def client_activity_level_choice(update: Update, context: CallbackContext)
 # Обработка цели клиента
 async def client_goal(update: Update, context: CallbackContext):
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1713,7 +1714,7 @@ async def client_allergies(update: Update, context: CallbackContext):
 
 
 async def client_yes_products(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1821,7 +1822,7 @@ async def client_no_products(update: Update, context: CallbackContext):
 
 
 async def client_calories(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -2045,7 +2046,7 @@ async def menu_options(update: Update, context: CallbackContext):
     """Handle menu options after plan generation."""
     logger.info("Starting menu_options function")
     query = update.callback_query
-    telegram_id = query.from_user.id
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -3403,6 +3404,7 @@ async def get_clients(update: Update, context: CallbackContext):
         telegram_id = update.message.from_user.id
 
     # Получаем информацию о чате (контексте)
+    context.user_data["telegram_id"] = telegram_id
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
