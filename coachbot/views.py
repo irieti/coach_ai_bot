@@ -1495,7 +1495,6 @@ async def client_selection(update: Update, context: CallbackContext):
                 return MAIN_MENU
 
             context.user_data["prompt"] = prompt
-            await update_chat_mapping(telegram_id, CLIENT_SELECTION, context.user_data)
 
             # Сообщаем пользователю ДО вызова OpenAI
             await query.edit_message_text("Минутку, составляю меню!🌀")
@@ -1503,11 +1502,7 @@ async def client_selection(update: Update, context: CallbackContext):
             # Получаем ответ
             response = await generate_response(update, context)
 
-            if not response or response.get("status") != "success":
-                error_msg = (
-                    "Не удалось сгенерировать меню. Пожалуйста, попробуйте позже."
-                )
-                await query.edit_message_text(error_msg)
+            if not response:
                 return CHOOSING_ACTION
 
             # Удаляем prompt, чтобы не переиспользовался случайно
