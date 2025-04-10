@@ -24,10 +24,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = "django-insecure-dn=3p=_f7(xqdonr*%gafm&y7y()%k#i+j+)hasqj=h$j8v%8y"
 
+
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [
+ALLOWED_HOSTS = ["68.183.39.168","coachbot.space", "www.coachbot.space",
     "2de1-2001-8a0-556c-1500-e114-1aeb-94d3-6b7b.ngrok-free.app",
     "localhost",
     "127.0.0.1",
@@ -98,9 +104,13 @@ WSGI_APPLICATION = "coachbot.wsgi.application"
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'telegram_bot',
+        'USER': 'irieti',
+        'PASSWORD': 'solidity5649',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 
@@ -142,7 +152,7 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"  # For production
 STATICFILES_DIRS = [
-    "/Users/irie/coachbot/coachbot/coachbot/static"  # or "/absolute/path/to/static"
+    os.path.join(BASE_DIR, 'coachbot/static'),  # or "/absolute/path/to/static"
 ]
 
 

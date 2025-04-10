@@ -41,7 +41,7 @@ import shutil
 from datetime import datetime, timedelta
 import asyncio
 from django.http import HttpResponse
-
+import traceback
 
 load_dotenv()
 
@@ -252,18 +252,18 @@ def initiate_initial_payment(amount, telegram_id):
 
 @csrf_exempt
 def tinka_webhook(request):
-    print("Webhook received")
+    logger.error("Tinkoff webhook handler called!")
     if request.method != "POST":
         print("Method not allowed")
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
         data = json.loads(request.body)
-        print(f"Webhook data received: {data}")
-
+        logger.error(f"{data} recieved")
         # Get token from data
         token = data.get("Token")
         print(f"Token received: {token}")
+        logger.error(f"{token} recieved")
 
         # Verify signature (but allow processing even if verification fails during testing)
         is_valid = verify_signature(data, token)
@@ -272,8 +272,8 @@ def tinka_webhook(request):
         # For testing, we'll proceed even if signature is invalid
         # In production, you should uncomment the following lines:
         if not is_valid:
-            print("Invalid signature")
-            return JsonResponse({"error": "Invalid signature"}, status=400)
+           print("Invalid signature")
+           return JsonResponse({"error": "Invalid signature"}, status=400)
 
         status = data.get("Status")
         payment_id = data.get("PaymentId")
@@ -353,7 +353,9 @@ def tinka_webhook(request):
         return HttpResponse("OK", status=200)
 
     except Exception as e:
-        print(f"Error processing webhook: {e}")
+        error_traceback = traceback.format_exc()
+        logger.error(f"Error in tinkoff_webhook_handler: {str(e)}")
+        logger.error(f"Traceback: {error_traceback}")
         return JsonResponse({"error": "Internal server error"}, status=500)
 
 
@@ -823,7 +825,7 @@ async def customer_email(update: Update, context: CallbackContext):
     if choice == "month_3000":
         subscription.amount = 30
         subscription.duration_days = 30
-        price_id = "price_1R1rEjAnFE16axxx9nhRX3dn"
+        price_id = "price_1RAdFNAnFE16axxxe4mtTnTm" # "price_1R1rEjAnFE16axxx9nhRX3dn"
     elif choice == "3month_2300":
         subscription.amount = 69
         subscription.duration_days = 90
@@ -1361,10 +1363,10 @@ async def client_name(update: Update, context: CallbackContext):
         return MAIN_MENU
     client_name = update.message.text.strip()
     action = context.user_data.get("client_action")
-
+    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     if action == "choose_client":
         clients = await sync_to_async(Client.objects.filter)(
-            name__icontains=client_name
+            name__icontains=client_name, coach=coach
         )
 
         if await sync_to_async(clients.exists)():
@@ -1403,7 +1405,7 @@ async def client_name(update: Update, context: CallbackContext):
 
             context.user_data["selected_client_id"] = new_client.id
             await update.message.reply_text(
-                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:"
+                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:", parse_mode="HTML"
             )
             await update_chat_mapping(telegram_id, CLIENT_SURNAME, context.user_data)
             return CLIENT_SURNAME
@@ -1838,7 +1840,8 @@ async def client_no_products(update: Update, context: CallbackContext):
 
 
 async def client_calories(update: Update, context: CallbackContext):
-    telegram_id = update.message.from_user.id
+    logger.info("Started client_calories func")
+    telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1864,7 +1867,8 @@ async def client_calories(update: Update, context: CallbackContext):
     proteins = 1.5 * weight
     fats = 1 * weight
     carbs = 1.7 * weight
-
+    logger.info(f"client.weight = {client.weight}, client.activity_level = {client.activity_level}, client.goal = {client.goal}")
+    calories = round(calories)
     client.calories = calories
     client.proteins = proteins
     client.fats = fats
@@ -1978,6 +1982,7 @@ async def creating_plan(update: Update, context: CallbackContext):
             await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
             return CHOOSING_ACTION
 
+        client.calories = await client_calories(update, context)
         prompt = ""
 
         if plan_type == "menu":
@@ -2114,6 +2119,7 @@ async def menu_options(update: Update, context: CallbackContext):
                 )
 
                 if file_path:
+                    logger.info(f"file_path {file_path}", exc_info=True)
                     with open(file_path, "rb") as file:
                         await query.message.reply_document(
                             document=file, filename=file_path
@@ -2128,6 +2134,7 @@ async def menu_options(update: Update, context: CallbackContext):
                     return MAIN_MENU
 
             except Exception as e:
+                logger.error(f"Error in download_plan_pdf: {str(e)}", exc_info=True)
                 print(f"Error in download_plan_pdf: {str(e)}")
                 await query.message.reply_text(
                     "Произошла ошибка при обработке запроса."
@@ -2197,10 +2204,10 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
         f"На основе следующего комментария обнови план: '{user_comment}'."
     )
     context.user_data["prompt"] = prompt
+    await update.message.reply_text("Минутку, составляю план!🌀")
     response = await generate_response(update, context)
     await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
 
-    await update.message.reply_text("Минутку, составляю план!🌀")
     if response:
         keyboard = [
             [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
@@ -2229,7 +2236,7 @@ class PlanPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=15)
 
         # Set the font path - using a relative path is safer
-        font_path = os.path.join(os.path.dirname(__file__), "static", "fonts")
+        font_path = "/var/www/django_telegram_bot/coach_ai_bot/staticfiles/fonts"
 
         # Add DejaVu fonts with Unicode support
         self.add_font(
@@ -2398,6 +2405,7 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
 
     except Exception as e:
         print(f"Error in download_plan_pdf: {str(e)}")
+        logger.error(f"Error in download_plan_pdf: {str(e)}")
         await query.message.reply_text("Произошла ошибка при обработке запроса.")
         return MAIN_MENU
 
@@ -4146,14 +4154,13 @@ def main():
 
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
-    application.run_polling()
     application.add_handler(CommandHandler("clients", get_clients))
     application.add_handler(CommandHandler("support", get_support))
     application.add_handler(CommandHandler("base", knowledge_base))
     application.add_handler(CommandHandler("edu", education))
     application.add_handler(CommandHandler("new", new_client))
     application.add_handler(CommandHandler("sub", cancel_subscription))
-
+    application.run_polling()
 
 if __name__ == "__main__":
     main()

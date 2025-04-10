@@ -7,7 +7,7 @@ class Coach(models.Model):
     name = models.CharField(max_length=100)
     telegram_id = models.CharField(max_length=50, unique=True)
     field = models.CharField(max_length=100, null=True)
-    positioning = models.CharField(max_length=1000, null=True)
+    positioning = models.CharField(max_length=5000, null=True)
 
     def __str__(self):
         return self.name
@@ -55,12 +55,12 @@ class Subscription(models.Model):
 
     def is_expired(self):
         """Подписка истекла (нужно попробовать оплатить)"""
-        expiration_date = self.expires_at()
+        expiration_date = self.expires_at
         return expiration_date and expiration_date <= now()
 
     def is_expired_yesterday(self):
         """Подписка истекла вчера или раньше (оплата не прошла)"""
-        expiration_date = self.expires_at()
+        expiration_date = self.expires_at
         return expiration_date and expiration_date.date() <= (
             now().date() - timedelta(days=1)
         )
