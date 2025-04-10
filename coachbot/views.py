@@ -11,7 +11,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
 )
-from telegram.ext import Application, BasePersistence
+from telegram.ext import Application, BasePersistence, JobQueue
 from .models import Coach, Client, Subscription, ChatMapping
 from fpdf import FPDF
 from typing import Dict, List, Optional, Any
@@ -41,6 +41,7 @@ from datetime import datetime, timedelta
 import asyncio
 from django.http import HttpResponse
 from .tasks import generate_openai_response_task
+from celery.result import AsyncResult
 
 load_dotenv()
 
@@ -116,6 +117,7 @@ REELS_PROMPT_HANDLER = 69
 REELS_CHANGE = 70
 REELS_GENERATION = 71
 NEW_CLIENT_NAME = 72
+WAITING_FOR_RESPONSE = 73
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -144,6 +146,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+job_queue = JobQueue()
 
 
 @sync_to_async
@@ -1493,37 +1496,40 @@ async def client_selection(update: Update, context: CallbackContext):
                 return MAIN_MENU
 
             context.user_data["prompt"] = prompt
+            await update_chat_mapping(telegram_id, CLIENT_SELECTION, context.user_data)
+
+            return await generate_response(update, context)
 
             # Сообщаем пользователю ДО вызова OpenAI
-            await query.edit_message_text("Минутку, составляю меню!🌀")
+            # await query.edit_message_text("Минутку, составляю меню!🌀")
 
             # Получаем ответ
-            response = await generate_response(update, context)
+            # response = await generate_response(update, context)
 
-            if not response or response.get("status") != "success":
-                error_msg = (
-                    "Не удалось сгенерировать меню. Пожалуйста, попробуйте позже."
-                )
-                await query.edit_message_text(error_msg)
-                return CHOOSING_ACTION
+            # if not response or response.get("status") != "success":
+            # error_msg = (
+            # "Не удалось сгенерировать меню. Пожалуйста, попробуйте позже."
+            # )
+            # await query.edit_message_text(error_msg)
+            # return CHOOSING_ACTION
 
             # Удаляем prompt, чтобы не переиспользовался случайно
-            context.user_data.pop("prompt", None)
+            # context.user_data.pop("prompt", None)
 
-            keyboard = [
-                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-                [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
-                [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-            ]
+            # keyboard = [
+            # [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
+            # [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
+            # [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
+            # ]
 
-            await query.edit_message_text(
-                text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-                "Что вы хотели бы сделать с планом?",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML",
-            )
-            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-            return MENU_OPTIONS
+            # await query.edit_message_text(
+            #  text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
+            # "Что вы хотели бы сделать с планом?",
+            # reply_markup=InlineKeyboardMarkup(keyboard),
+            # parse_mode="HTML",
+        # )
+        # await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+        # return MENU_OPTIONS
 
     except Coach.DoesNotExist:
         logger.error("Тренер не найден.")
@@ -1896,17 +1902,70 @@ async def generate_response(update: Update, context: CallbackContext):
     prompt = context.user_data.get("prompt")
 
     if not telegram_id or not prompt:
-        logger.error("Missing telegram_id or prompt in context")
-        return None
+        await update.message.reply_text("❌ Ошибка: недостаточно данных")
+        return MAIN_MENU
 
-    try:
-        task = generate_openai_response_task.delay(prompt, telegram_id)
-        response = await asyncio.to_thread(task.get, timeout=30)
-        return response
+    # Запускаем задачу
+    task = generate_openai_response_task.delay(prompt, telegram_id)
 
-    except Exception as e:
-        logger.error(f"Error in generate_response: {e}", exc_info=True)
-        return None
+    # Сохраняем данные для проверки
+    context.user_data.update(
+        {
+            "openai_task_id": task.id,
+            "original_chat_id": update.effective_chat.id,
+            "original_message_id": update.message.message_id,
+        }
+    )
+
+    # Планируем первую проверку через 3 секунды
+    context.job_queue.run_once(
+        callback=check_openai_result,
+        when=3,
+        data={"telegram_id": telegram_id},
+        name=f"openai_check_{task.id}",
+    )
+
+    await update.message.reply_text("⏳ Запрос принят. Ожидайте результат...")
+    return WAITING_FOR_RESPONSE
+
+
+async def check_openai_result(context: CallbackContext):
+    job = context.job
+    task_id = context.user_data.get("openai_task_id")
+
+    if not task_id:
+        return
+
+    task = AsyncResult(task_id)
+
+    if task.ready():
+        if task.successful():
+            response = task.result
+            # Отправляем результат и клавиатуру
+            keyboard = [
+                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
+                [InlineKeyboardButton("Скачать PDF", callback_data="download_pdf")],
+            ]
+            await context.bot.send_message(
+                chat_id=context.user_data["original_chat_id"],
+                text=f"✅ Результат:\n\n{response}",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML",
+            )
+            # Возвращаем в нужное состояние
+            return MENU_OPTIONS
+        else:
+            await context.bot.send_message(
+                chat_id=context.user_data["original_chat_id"],
+                text="❌ Ошибка при генерации ответа",
+            )
+            return MAIN_MENU
+    else:
+        # Если ответ не готов, проверяем ещё раз через 3 сек
+        context.job_queue.run_once(
+            check_openai_result, when=3, data=job.data, name=f"openai_check_{task_id}"
+        )
+        return WAITING_FOR_RESPONSE
 
 
 async def creating_plan(update: Update, context: CallbackContext):
@@ -3853,7 +3912,11 @@ async def error_handler(update: Update, context: CallbackContext):
 def main():
     persistence = PicklePersistence(filepath="conversation_states.pickle")
     application = (
-        Application.builder().token(BOT_TOKEN).persistence(persistence).build()
+        Application.builder()
+        .token(BOT_TOKEN)
+        .persistence(persistence)
+        .job_queue(job_queue)
+        .build()
     )
 
     conv_handler = ConversationHandler(
@@ -4081,6 +4144,9 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, reels_generation),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
+            WAITING_FOR_RESPONSE: [
+                MessageHandler(filters.ALL, lambda u, c: None)  # Игнорируем любой ввод
+            ],
         },
         fallbacks=[
             CommandHandler("start", start),
@@ -4096,16 +4162,18 @@ def main():
         name="main_conversation",
         persistent=True,
     )
+    job_queue.set_application(application)
+    job_queue.start()
 
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
-    application.run_polling()
     application.add_handler(CommandHandler("clients", get_clients))
     application.add_handler(CommandHandler("support", get_support))
     application.add_handler(CommandHandler("base", knowledge_base))
     application.add_handler(CommandHandler("edu", education))
     application.add_handler(CommandHandler("new", new_client))
     application.add_handler(CommandHandler("sub", cancel_subscription))
+    application.run_polling()
 
 
 if __name__ == "__main__":
