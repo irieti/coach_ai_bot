@@ -42,6 +42,7 @@ import asyncio
 from django.http import HttpResponse
 from .tasks import generate_openai_response_task
 from celery.result import AsyncResult
+from openai import OpenAI
 
 load_dotenv()
 
@@ -1898,10 +1899,24 @@ async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
     prompt = context.user_data.get("prompt")
 
-    # Запускаем задачу
-    task = generate_openai_response_task.delay(prompt, telegram_id)
-
-    return task
+    try:
+        logger.info(f"Starting task with prompt: {prompt}")
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="gpt-4-turbo",
+        )
+        ChatGPT_reply = response.choices[0].message.content
+        logger.info(f"Task completed successfully")
+        return ChatGPT_reply
+    except Exception as e:
+        logger.error(f"Error in generate_openai_response_task: {e}", exc_info=True)
+        return None
 
 
 async def creating_plan(update: Update, context: CallbackContext):
