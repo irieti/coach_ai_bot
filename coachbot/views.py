@@ -1906,7 +1906,9 @@ async def generate_response(update: Update, context: CallbackContext):
 
     try:
         # Запуск синхронной Celery-задачи в фоне
-        task = generate_openai_response_task.delay(prompt)  # запуск задачи Celery
+        task = generate_openai_response_task.delay(
+            prompt, telegram_id
+        )  # запуск задачи Celery
 
         # Подождем получения результата от Celery через callback
         response_text = await asyncio.to_thread(
