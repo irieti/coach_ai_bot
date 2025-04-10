@@ -2215,9 +2215,7 @@ class PlanPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=15)
 
         # Set the font path - using a relative path is safer
-        font_path = (
-            "/var/www/django_telegram_bot/coach_ai_bot/coachbot/staticfiles/fonts"
-        )
+        font_path = "/var/www/django_telegram_bot/coach_ai_bot/coachbot/static/fonts"
 
         # Add DejaVu fonts with Unicode support
         self.add_font(
