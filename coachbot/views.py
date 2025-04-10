@@ -1908,15 +1908,6 @@ async def generate_response(update: Update, context: CallbackContext):
     # Запускаем задачу
     task = generate_openai_response_task.delay(prompt, telegram_id)
 
-    # Сохраняем данные для проверки
-    context.user_data.update(
-        {
-            "openai_task_id": task.id,
-            "original_chat_id": update.effective_chat.id,
-            "original_message_id": update.message.message_id,
-        }
-    )
-
     # Планируем первую проверку через 3 секунды
     context.job_queue.run_once(
         callback=check_openai_result,
