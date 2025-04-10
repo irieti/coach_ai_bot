@@ -40,7 +40,6 @@ import shutil
 from datetime import datetime, timedelta
 import asyncio
 from django.http import HttpResponse
-from .tasks import generate_openai_response_task
 from celery.result import AsyncResult
 from openai import OpenAI
 
