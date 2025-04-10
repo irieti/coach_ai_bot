@@ -98,16 +98,7 @@ def generate_openai_response_task(prompt, telegram_id):
             ],
             model="gpt-4-turbo",
         )
-
         ChatGPT_reply = response.choices[0].message.content
-
-        messages.append({"role": "assistant", "content": ChatGPT_reply})
-
-        # Отправляем сообщение в телеграм
-        bot = Bot(token=BOT_TOKEN)
-        bot.send_message(chat_id=telegram_id, text=ChatGPT_reply)
-
-        # Можно также обновить mapping в базе
         return ChatGPT_reply
     except Exception as e:
         logger.error(f"Error generating OpenAI response: {e}")

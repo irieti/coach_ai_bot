@@ -1892,7 +1892,6 @@ async def client_action(update: Update, context: CallbackContext):
 async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
-
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
         print(f"mapping found and restored: {mapping.state}")
@@ -1906,9 +1905,7 @@ async def generate_response(update: Update, context: CallbackContext):
 
     try:
         # Запуск синхронной Celery-задачи в фоне
-        task = generate_openai_response_task.delay(
-            prompt, telegram_id
-        )  # запуск задачи Celery
+        task = generate_openai_response_task.delay(prompt, telegram_id)
 
         # Подождем получения результата от Celery через callback
         response_text = await asyncio.to_thread(
@@ -1918,24 +1915,26 @@ async def generate_response(update: Update, context: CallbackContext):
         if not response_text:
             raise ValueError("OpenAI вернул пустой ответ.")
 
-        # Сохраняем в context для последующего использования (например, редактирования)
+        # Сохраняем в context для последующего использования
         context.user_data["response"] = response_text
+
+        # Отправляем сообщение пользователю
+        if update.callback_query:
+            await update.callback_query.message.reply_text(response_text)
+        else:
+            await update.message.reply_text(response_text)
 
         # Обновляем состояние и сохраняем контекст
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-
-        return response_text
+        return CHOOSING_ACTION
 
     except Exception as e:
         logger.error(f"Ошибка в generate_response: {e}")
-
         error_message = "Произошла ошибка при генерации ответа. Попробуйте снова."
-
         if update.callback_query:
             await update.callback_query.message.reply_text(error_message)
         else:
             await update.message.reply_text(error_message)
-
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         return CHOOSING_ACTION
 
