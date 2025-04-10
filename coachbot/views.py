@@ -2383,6 +2383,7 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
 
     except Exception as e:
         print(f"Error in download_plan_pdf: {str(e)}")
+        logger.error(f"error: {e}")
         await query.message.reply_text("Произошла ошибка при обработке запроса.")
         return MAIN_MENU
 
