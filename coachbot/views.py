@@ -1500,7 +1500,11 @@ async def client_selection(update: Update, context: CallbackContext):
             # Получаем ответ
             response = await generate_response(update, context)
 
-            if not response:
+            if not response or response.get("status") != "success":
+                error_msg = (
+                    "Не удалось сгенерировать меню. Пожалуйста, попробуйте позже."
+                )
+                await query.edit_message_text(error_msg)
                 return CHOOSING_ACTION
 
             # Удаляем prompt, чтобы не переиспользовался случайно
@@ -1889,46 +1893,20 @@ async def client_action(update: Update, context: CallbackContext):
 ############################## NUTRITION PLAN #####################################
 async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
-    if not telegram_id:
-        logger.error("No telegram_id in context")
-        return MAIN_MENU
-
     prompt = context.user_data.get("prompt")
-    if not prompt:
-        logger.warning("Empty prompt in generate_response")
-        return MAIN_MENU
+
+    if not telegram_id or not prompt:
+        logger.error("Missing telegram_id or prompt in context")
+        return None
 
     try:
-        logger.info(f"Starting OpenAI task for {telegram_id}")
         task = generate_openai_response_task.delay(prompt, telegram_id)
-        
-        try:
-            response_text = await asyncio.to_thread(task.get, timeout=30)
-        except Exception as e:
-            logger.error(f"Error getting task result: {e}")
-            raise
-
-        if not response_text:
-            raise ValueError("OpenAI returned empty response")
-
-        context.user_data["response"] = response_text
-
-        if update.callback_query:
-            await update.callback_query.message.reply_text(response_text)
-        else:
-            await update.message.reply_text(response_text)
-
-        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-        return CHOOSING_ACTION
+        response = await asyncio.to_thread(task.get, timeout=30)
+        return response
 
     except Exception as e:
         logger.error(f"Error in generate_response: {e}", exc_info=True)
-        error_message = "Произошла ошибка при генерации ответа. Попробуйте снова."
-        if update.callback_query:
-            await update.callback_query.message.reply_text(error_message)
-        else:
-            await update.message.reply_text(error_message)
-        return CHOOSING_ACTION
+        return None
 
 
 async def creating_plan(update: Update, context: CallbackContext):
