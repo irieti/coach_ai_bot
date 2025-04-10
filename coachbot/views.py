@@ -17,7 +17,6 @@ from fpdf import FPDF
 from typing import Dict, List, Optional, Any
 import logging
 from asgiref.sync import sync_to_async
-from openai import OpenAI
 import os
 from telegram import BotCommand, Bot
 from dotenv import load_dotenv

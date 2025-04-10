@@ -8,12 +8,22 @@ from django.conf import settings
 from telegram import Bot
 import os
 from dotenv import load_dotenv
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+question = ""
+
+messages = [
+    {
+        "role": "system",
+        "content": "You are the nutritionist and coach marketing expert",
+    }
+]
 
 
 @shared_task
@@ -78,21 +88,27 @@ def check_expired_subscriptions():
 @shared_task
 def generate_openai_response_task(prompt, telegram_id):
     try:
-        openai.api_key = OPENAI_API_KEY
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=2000,
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="gpt-4-turbo",
         )
-        reply = response.choices[0].message.content
+
+        ChatGPT_reply = response.choices[0].message.content
+
+        messages.append({"role": "assistant", "content": ChatGPT_reply})
 
         # Отправляем сообщение в телеграм
         bot = Bot(token=BOT_TOKEN)
-        bot.send_message(chat_id=telegram_id, text=reply)
+        bot.send_message(chat_id=telegram_id, text=ChatGPT_reply)
 
         # Можно также обновить mapping в базе
-        return reply
+        return ChatGPT_reply
     except Exception as e:
         logger.error(f"Error generating OpenAI response: {e}")
         return None
