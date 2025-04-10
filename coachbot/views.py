@@ -1887,55 +1887,47 @@ async def client_action(update: Update, context: CallbackContext):
 
 
 ############################## NUTRITION PLAN #####################################
-
-
 async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
+    if not telegram_id:
+        logger.error("No telegram_id in context")
         return MAIN_MENU
 
     prompt = context.user_data.get("prompt")
     if not prompt:
-        logger.warning("Пустой prompt при вызове generate_response.")
+        logger.warning("Empty prompt in generate_response")
         return MAIN_MENU
 
     try:
-        # Запуск синхронной Celery-задачи в фоне
+        logger.info(f"Starting OpenAI task for {telegram_id}")
         task = generate_openai_response_task.delay(prompt, telegram_id)
-
-        # Подождем получения результата от Celery через callback
-        response_text = await asyncio.to_thread(
-            task.get
-        )  # Получаем результат из Celery задачи
+        
+        try:
+            response_text = await asyncio.to_thread(task.get, timeout=30)
+        except Exception as e:
+            logger.error(f"Error getting task result: {e}")
+            raise
 
         if not response_text:
-            raise ValueError("OpenAI вернул пустой ответ.")
+            raise ValueError("OpenAI returned empty response")
 
-        # Сохраняем в context для последующего использования
         context.user_data["response"] = response_text
 
-        # Отправляем сообщение пользователю
         if update.callback_query:
             await update.callback_query.message.reply_text(response_text)
         else:
             await update.message.reply_text(response_text)
 
-        # Обновляем состояние и сохраняем контекст
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         return CHOOSING_ACTION
 
     except Exception as e:
-        logger.error(f"Ошибка в generate_response: {e}")
+        logger.error(f"Error in generate_response: {e}", exc_info=True)
         error_message = "Произошла ошибка при генерации ответа. Попробуйте снова."
         if update.callback_query:
             await update.callback_query.message.reply_text(error_message)
         else:
             await update.message.reply_text(error_message)
-        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         return CHOOSING_ACTION
 
 

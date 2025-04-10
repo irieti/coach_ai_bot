@@ -60,6 +60,10 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+# Celery Configuration
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_RETRY = True
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

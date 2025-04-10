@@ -85,9 +85,10 @@ def check_expired_subscriptions():
     return f"Processed {renewed_count + failed_count} expired subscriptions: {renewed_count} renewed, {failed_count} failed"
 
 
-@shared_task
-def generate_openai_response_task(prompt, telegram_id):
+@shared_task(bind=True)
+def generate_openai_response_task(self, prompt, telegram_id):
     try:
+        logger.info(f"Starting task with prompt: {prompt}")
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             messages=[
@@ -99,7 +100,8 @@ def generate_openai_response_task(prompt, telegram_id):
             model="gpt-4-turbo",
         )
         ChatGPT_reply = response.choices[0].message.content
+        logger.info(f"Task completed successfully")
         return ChatGPT_reply
     except Exception as e:
-        logger.error(f"Error generating OpenAI response: {e}")
+        logger.error(f"Error in generate_openai_response_task: {e}", exc_info=True)
         return None
