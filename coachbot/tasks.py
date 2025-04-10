@@ -3,6 +3,8 @@ from django.utils.timezone import now
 from .models import Subscription
 import logging
 from datetime import timedelta
+import openai
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -64,3 +66,19 @@ def check_expired_subscriptions():
         subscription.check_and_cancel()
 
     return f"Processed {renewed_count + failed_count} expired subscriptions: {renewed_count} renewed, {failed_count} failed"
+
+
+@shared_task
+def generate_openai_response_task(prompt):
+    try:
+        openai.api_key = settings.OPENAI_API_KEY
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error generating OpenAI response: {e}")
+        return None

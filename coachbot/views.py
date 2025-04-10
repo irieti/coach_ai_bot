@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 import asyncio
 from django.http import HttpResponse
 import traceback
+from celery import shared_task
 
 load_dotenv()
 
@@ -1921,43 +1922,44 @@ async def generate_response(update: Update, context: CallbackContext):
     else:
         return MAIN_MENU
     prompt = context.user_data.get("prompt")
-    """Универсальная функция для обращения к OpenAI."""
+    
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
-        response = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="gpt-4-turbo",
+        # Start the Celery task in a separate thread
+        task = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: generate_openai_response_task.delay(prompt)
         )
-
-        ChatGPT_reply = response.choices[0].message.content
-
-        messages.append({"role": "assistant", "content": ChatGPT_reply})
-
-        context.user_data["response"] = ChatGPT_reply
+        
+        # Wait for the task to complete
+        while True:
+            # Check task status in a separate thread
+            is_ready = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: task.ready()
+            )
+            
+            if is_ready:
+                break
+            await asyncio.sleep(1)
+        
+        # Get the result
+        response = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: task.get(timeout=60)
+        )
+        
+        if response is None:
+            raise Exception("Failed to generate response")
+            
+        context.user_data["response"] = response
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-
-        response = ChatGPT_reply
-
+        
         return response
 
     except Exception as e:
         logger.error(f"Error in generate_response: {e}")
-        if update.callback_query:
-            await update.callback_query.message.reply_text(
-                "Произошла ошибка при генерации ответа. Попробуйте снова."
-            )
-        else:
-            await update.message.reply_text(
-                "Произошла ошибка при генерации ответа. Попробуйте снова."
-            )
-            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-        return CHOOSING_ACTION
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        return None
 
 
 async def creating_plan(update: Update, context: CallbackContext):
