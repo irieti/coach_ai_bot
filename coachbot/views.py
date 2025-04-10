@@ -117,7 +117,6 @@ REELS_PROMPT_HANDLER = 69
 REELS_CHANGE = 70
 REELS_GENERATION = 71
 NEW_CLIENT_NAME = 72
-WAITING_FOR_RESPONSE = 73
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -1498,38 +1497,36 @@ async def client_selection(update: Update, context: CallbackContext):
             context.user_data["prompt"] = prompt
             await update_chat_mapping(telegram_id, CLIENT_SELECTION, context.user_data)
 
-            return await generate_response(update, context)
-
             # Сообщаем пользователю ДО вызова OpenAI
-            # await query.edit_message_text("Минутку, составляю меню!🌀")
+            await query.edit_message_text("Минутку, составляю меню!🌀")
 
             # Получаем ответ
-            # response = await generate_response(update, context)
+            response = await generate_response(update, context)
 
-            # if not response or response.get("status") != "success":
-            # error_msg = (
-            # "Не удалось сгенерировать меню. Пожалуйста, попробуйте позже."
-            # )
-            # await query.edit_message_text(error_msg)
-            # return CHOOSING_ACTION
+            if not response or response.get("status") != "success":
+                error_msg = (
+                    "Не удалось сгенерировать меню. Пожалуйста, попробуйте позже."
+                )
+                await query.edit_message_text(error_msg)
+                return CHOOSING_ACTION
 
             # Удаляем prompt, чтобы не переиспользовался случайно
-            # context.user_data.pop("prompt", None)
+            context.user_data.pop("prompt", None)
 
-            # keyboard = [
-            # [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-            # [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
-            # [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-            # ]
+            keyboard = [
+                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
+                [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
+                [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
+            ]
 
-            # await query.edit_message_text(
-            #  text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-            # "Что вы хотели бы сделать с планом?",
-            # reply_markup=InlineKeyboardMarkup(keyboard),
-            # parse_mode="HTML",
-        # )
-        # await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-        # return MENU_OPTIONS
+            await query.edit_message_text(
+                text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
+                "Что вы хотели бы сделать с планом?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML",
+            )
+            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+            return MENU_OPTIONS
 
     except Coach.DoesNotExist:
         logger.error("Тренер не найден.")
@@ -1901,62 +1898,10 @@ async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
     prompt = context.user_data.get("prompt")
 
-    if not telegram_id or not prompt:
-        await update.message.reply_text("❌ Ошибка: недостаточно данных")
-        return MAIN_MENU
-
     # Запускаем задачу
     task = generate_openai_response_task.delay(prompt, telegram_id)
 
-    # Планируем первую проверку через 3 секунды
-    context.job_queue.run_once(
-        callback=check_openai_result,
-        when=3,
-        data={"telegram_id": telegram_id},
-        name=f"openai_check_{task.id}",
-    )
-
-    await update.message.reply_text("⏳ Запрос принят. Ожидайте результат...")
-    return WAITING_FOR_RESPONSE
-
-
-async def check_openai_result(context: CallbackContext):
-    job = context.job
-    task_id = context.user_data.get("openai_task_id")
-
-    if not task_id:
-        return
-
-    task = AsyncResult(task_id)
-
-    if task.ready():
-        if task.successful():
-            response = task.result
-            # Отправляем результат и клавиатуру
-            keyboard = [
-                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-                [InlineKeyboardButton("Скачать PDF", callback_data="download_pdf")],
-            ]
-            await context.bot.send_message(
-                chat_id=context.user_data["original_chat_id"],
-                text=f"✅ Результат:\n\n{response}",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML",
-            )
-            # Возвращаем в нужное состояние
-            return MENU_OPTIONS
-        else:
-            await context.bot.send_message(
-                chat_id=context.user_data["original_chat_id"],
-                text="❌ Ошибка при генерации ответа",
-            )
-            return MAIN_MENU
-    else:
-        # Если ответ не готов, проверяем ещё раз через 3 сек
-        context.job_queue.run_once(
-            check_openai_result, when=3, data=job.data, name=f"openai_check_{task_id}"
-        )
-        return WAITING_FOR_RESPONSE
+    return task
 
 
 async def creating_plan(update: Update, context: CallbackContext):
@@ -3903,11 +3848,7 @@ async def error_handler(update: Update, context: CallbackContext):
 def main():
     persistence = PicklePersistence(filepath="conversation_states.pickle")
     application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .persistence(persistence)
-        .job_queue(job_queue)
-        .build()
+        Application.builder().token(BOT_TOKEN).persistence(persistence).build()
     )
 
     conv_handler = ConversationHandler(
@@ -3926,217 +3867,298 @@ def main():
             SUBSCRIPTION: [CallbackQueryHandler(subscription)],
             SUB_HANDLER: [CallbackQueryHandler(sub_handler)],
             MAIN_MENU: [
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-                CallbackQueryHandler(choosing_action, pattern="^[12345]$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
+                CallbackQueryHandler(
+                    choosing_action, pattern="^[12345]$", run_async=True
+                ),
             ],
             CHOOSING_ACTION: [
-                CallbackQueryHandler(choosing_action, pattern="^[123456]$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(
+                    choosing_action, pattern="^[123456]$", run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_CHOICE: [
                 CallbackQueryHandler(
-                    client_choice, pattern="^(choose_client|add_client)$"
+                    client_choice,
+                    pattern="^(choose_client|add_client)$",
+                    run_async=True,
                 ),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
-            NEW_CLIENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_client)],
+            NEW_CLIENT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, new_client, run_async=True
+                )
+            ],
             CLIENT_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_name),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_name, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             NEW_CLIENT_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, new_client_name),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, new_client_name, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_SELECTION: [
-                CallbackQueryHandler(client_selection, pattern="^select_\\d+$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(
+                    client_selection, pattern="^select_\\d+$", run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_SURNAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_surname)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_surname, run_async=True
+                )
             ],
             CLIENT_WEIGHT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_weight)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_weight, run_async=True
+                )
             ],
             CLIENT_ACTION: [
-                CallbackQueryHandler(client_action),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(client_action, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_ACTIVITY_LEVEL_CHOICE: [
-                CallbackQueryHandler(client_activity_level_choice),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(client_activity_level_choice, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_GOAL: [
-                CallbackQueryHandler(client_goal),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(client_goal, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_ALLERGIES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_allergies)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_allergies, run_async=True
+                )
             ],
             CLIENT_YES_PRODUCTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_yes_products)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_yes_products, run_async=True
+                )
             ],
             CLIENT_NO_PRODUCTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_no_products)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_no_products, run_async=True
+                )
             ],
             CLIENT_CALORIES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_calories)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_calories, run_async=True
+                )
             ],
             GENERATE_RESPONSE: [
-                CallbackQueryHandler(generate_response),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(generate_response, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CREATING_PLAN: [
-                CallbackQueryHandler(creating_plan),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(creating_plan, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             MENU_OPTIONS: [
-                CallbackQueryHandler(menu_options),
+                CallbackQueryHandler(menu_options, run_async=True),
             ],
             EDIT_PLAN_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_plan_comment)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, edit_plan_comment, run_async=True
+                )
             ],
             CHOOSING_GOAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_training_goal)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    handle_training_goal,
+                    run_async=True,
+                )
             ],
             CHOOSING_MUSCLE_GROUP: [
-                CallbackQueryHandler(handle_muscle_group),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(handle_muscle_group, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             TRAINING_WEEK: [
-                CallbackQueryHandler(training_week),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(training_week, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             PLAN_HANDLER: [
-                CallbackQueryHandler(plan_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(plan_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             DOWNLOAD_PDF: [
-                CallbackQueryHandler(download_plan_pdf),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(download_plan_pdf, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             GET_POS: [
-                CallbackQueryHandler(get_positioning),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(get_positioning, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             COACH_FIELD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, coach_field),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, coach_field, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             APPROACH: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, approach),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, approach, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             REQUEST: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, request),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, request, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             TARGET: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, target_audience),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, target_audience, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             PRODUCT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, product),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, product, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
-            ONLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, online)],
-            EFFECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, effect)],
-            FIELDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, fields)],
+            ONLINE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, online, run_async=True)
+            ],
+            EFFECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, effect, run_async=True)
+            ],
+            FIELDS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fields, run_async=True)
+            ],
             POSITIONING: [
-                CallbackQueryHandler(positioning),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(positioning, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             EDIT_POS_HANDLER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pos_handler)
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, edit_pos_handler, run_async=True
+                )
             ],
             SAVE_POS_HANDLER: [
-                CallbackQueryHandler(save_pos_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(save_pos_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             SOCIAL_MEDIA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, social_media),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, social_media, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CONTENT_GOAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, content_goal),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, content_goal, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CONTENT_PROMPT: [
-                CallbackQueryHandler(content_prompt),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(content_prompt, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CONTENT_PROMPT_HANDLER: [
-                CallbackQueryHandler(content_prompt_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(content_prompt_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CONTENT_SALES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, content_sales),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, content_sales, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CONTENT_CHANGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, content_change),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, content_change, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             TEXT_PROMPT_HANDLER: [
-                CallbackQueryHandler(text_prompt_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(text_prompt_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             TEXT_CHANGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, text_change),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, text_change, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             TEXT_GENERATION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, text_generation),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, text_generation, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             HANDLE_TRAINING_TYPE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_training_type),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    handle_training_type,
+                    run_async=True,
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
-            HANDLE_WORKOUT_TYPE: [CallbackQueryHandler(workout_type)],
-            GET_CLIENTS: [CallbackQueryHandler(get_clients, pattern="^get_clients$")],
+            HANDLE_WORKOUT_TYPE: [CallbackQueryHandler(workout_type, run_async=True)],
+            GET_CLIENTS: [
+                CallbackQueryHandler(
+                    get_clients, pattern="^get_clients$", run_async=True
+                )
+            ],
             EDIT_CLIENT: [
-                CallbackQueryHandler(edit_client),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-                CallbackQueryHandler(get_clients, pattern="^get_clients$"),
+                CallbackQueryHandler(edit_client, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
+                CallbackQueryHandler(
+                    get_clients, pattern="^get_clients$", run_async=True
+                ),
             ],
             EDIT_CLIENT_DATA_HANDLER: [
-                CallbackQueryHandler(edit_client_data_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-                CallbackQueryHandler(get_clients, pattern="^get_clients$"),
+                CallbackQueryHandler(edit_client_data_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
+                CallbackQueryHandler(
+                    get_clients, pattern="^get_clients$", run_async=True
+                ),
             ],
             CLIENTS_HANDLER: [
-                CallbackQueryHandler(clients_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(clients_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CLIENT_DATA_MSG: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_data_msg),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, client_data_msg, run_async=True
+                ),
             ],
             CLIENT_DATA_QUERY: [
-                CallbackQueryHandler(client_data_query),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(client_data_query, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             CUSTOMER_EMAIL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, customer_email),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, customer_email, run_async=True
+                ),
             ],
             CANCEL_SUB_HANDLER: [
-                CallbackQueryHandler(cancel_subscription_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(cancel_subscription_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             REELS_PROMPT_HANDLER: [
-                CallbackQueryHandler(reels_prompt_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(reels_prompt_handler, run_async=True),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             REELS_CHANGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, reels_change),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, reels_change, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
             REELS_GENERATION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, reels_generation),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            WAITING_FOR_RESPONSE: [
-                MessageHandler(filters.ALL, lambda u, c: None)  # Игнорируем любой ввод
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, reels_generation, run_async=True
+                ),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$", run_async=True),
             ],
         },
         fallbacks=[
