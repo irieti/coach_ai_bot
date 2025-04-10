@@ -1551,10 +1551,15 @@ async def client_selection(update: Update, context: CallbackContext):
             )
             return CONTENT_PROMPT_HANDLER
 
-    elif content_goal == "sales":
-        await query.edit_message_text("Расскажите подробно о своей услуге/продукте")
-        await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
-        return CONTENT_SALES
+    try:
+        if content_goal == "sales":
+            await query.edit_message_text("Расскажите подробно о своей услуге/продукте")
+            await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
+            return CONTENT_SALES
+    except Exception as e:
+        logger.error(f"Error in content_goal: {e}")
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        return CHOOSING_ACTION
 
 
 async def content_prompt_handler(update: Update, context: CallbackContext):
