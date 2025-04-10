@@ -268,12 +268,14 @@ def tinka_webhook(request):
 
         # Verify signature (but allow processing even if verification fails during testing)
         is_valid = verify_signature(data, token)
+        logger.info(f"Signature valid: {is_valid}")
         print(f"Signature valid: {is_valid}")
 
         # For testing, we'll proceed even if signature is invalid
         # In production, you should uncomment the following lines:
         if not is_valid:
             print("Invalid signature")
+            logger.error("Invalid signature")
             return JsonResponse({"error": "Invalid signature"}, status=400)
 
         status = data.get("Status")
