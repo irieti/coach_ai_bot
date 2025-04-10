@@ -41,8 +41,7 @@ import shutil
 from datetime import datetime, timedelta
 import asyncio
 from django.http import HttpResponse
-import traceback
-from celery import shared_task
+from .tasks import generate_openai_response_task
 
 load_dotenv()
 
@@ -253,18 +252,18 @@ def initiate_initial_payment(amount, telegram_id):
 
 @csrf_exempt
 def tinka_webhook(request):
-    logger.error("Tinkoff webhook handler called!")
+    print("Webhook received")
     if request.method != "POST":
         print("Method not allowed")
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
         data = json.loads(request.body)
-        logger.error(f"{data} recieved")
+        print(f"Webhook data received: {data}")
+
         # Get token from data
         token = data.get("Token")
         print(f"Token received: {token}")
-        logger.error(f"{token} recieved")
 
         # Verify signature (but allow processing even if verification fails during testing)
         is_valid = verify_signature(data, token)
@@ -354,9 +353,7 @@ def tinka_webhook(request):
         return HttpResponse("OK", status=200)
 
     except Exception as e:
-        error_traceback = traceback.format_exc()
-        logger.error(f"Error in tinkoff_webhook_handler: {str(e)}")
-        logger.error(f"Traceback: {error_traceback}")
+        print(f"Error processing webhook: {e}")
         return JsonResponse({"error": "Internal server error"}, status=500)
 
 
@@ -826,7 +823,7 @@ async def customer_email(update: Update, context: CallbackContext):
     if choice == "month_3000":
         subscription.amount = 30
         subscription.duration_days = 30
-        price_id = "price_1RAdFNAnFE16axxxe4mtTnTm"  # "price_1R1rEjAnFE16axxx9nhRX3dn"
+        price_id = "price_1R1rEjAnFE16axxx9nhRX3dn"
     elif choice == "3month_2300":
         subscription.amount = 69
         subscription.duration_days = 90
@@ -1364,10 +1361,10 @@ async def client_name(update: Update, context: CallbackContext):
         return MAIN_MENU
     client_name = update.message.text.strip()
     action = context.user_data.get("client_action")
-    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+
     if action == "choose_client":
         clients = await sync_to_async(Client.objects.filter)(
-            name__icontains=client_name, coach=coach
+            name__icontains=client_name
         )
 
         if await sync_to_async(clients.exists)():
@@ -1406,8 +1403,7 @@ async def client_name(update: Update, context: CallbackContext):
 
             context.user_data["selected_client_id"] = new_client.id
             await update.message.reply_text(
-                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:",
-                parse_mode="HTML",
+                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:"
             )
             await update_chat_mapping(telegram_id, CLIENT_SURNAME, context.user_data)
             return CLIENT_SURNAME
@@ -1425,14 +1421,14 @@ async def client_name(update: Update, context: CallbackContext):
 
 async def client_selection(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
-    print(f"Received update: {update}")
     query = update.callback_query
     mapping = await get_chat_mapping(telegram_id)
+
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
     else:
         return MAIN_MENU
+
     await query.answer()
 
     selected_client_id = query.data.split("_", 1)[1]
@@ -1440,120 +1436,99 @@ async def client_selection(update: Update, context: CallbackContext):
 
     try:
         coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
-        logger.info(f"Тренер найден: {coach}")
-
         client = await sync_to_async(Client.objects.get)(
             id=selected_client_id, coach=coach
         )
 
-        if client:
-            logger.info(f"Клиент найден: {client}")
-            context.user_data["selected_client_id"] = client.id
-            logger.info(f"context.user_data обновлен: {context.user_data}")
-            plan_type = await client_action(update, context)
-            print(f"plan_type: {plan_type}")
-            if plan_type == "training":
-                keyboard = [
-                    [
-                        InlineKeyboardButton(
-                            "Начальный уровень", callback_data="beginner"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "Средний уровень", callback_data="intermediate"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "Продвинутый уровень", callback_data="advanced"
-                        )
-                    ],
-                    [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.callback_query.edit_message_text(
-                    "Для какого уровня подготовки будет тренировка?",
-                    reply_markup=reply_markup,
-                )
-                await update_chat_mapping(telegram_id, TRAINING_WEEK, context.user_data)
-                return TRAINING_WEEK
-            elif plan_type == "menu":
-                required_fields = [
-                    client.name,
-                    client.weight,
-                    client.goal,
-                    client.calories,
-                    client.proteins,
-                    client.fats,
-                    client.carbs,
-                    client.yes_products,
-                    client.no_products,
-                ]
-
-                # Проверка на None или пустую строку
-                if any(field is None or field == "" for field in required_fields):
-                    await update.callback_query.edit_message_text(
-                        "Анкета клиента заполнена не до конца. Перейдите в список клиентов в меню и отредактируйте анкету клиента."
-                    )
-                    await update_chat_mapping(
-                        telegram_id, CHOOSING_ACTION, context.user_data
-                    )
-                    return MAIN_MENU
-                prompt = await creating_plan(update, context)
-                await update.callback_query.edit_message_text(
-                    "Минутку, составляю меню!🌀"
-                )
-                if prompt:
-                    response = await generate_response(update, context)
-                    if response:
-                        keyboard = [
-                            [
-                                InlineKeyboardButton(
-                                    "Редактировать", callback_data="edit_menu"
-                                )
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    "Скачать в PDF", callback_data="download_pdf"
-                                )
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    "Назад в меню", callback_data="main_menu"
-                                )
-                            ],
-                        ]
-                        reply_markup = InlineKeyboardMarkup(keyboard)
-
-                        await update.callback_query.edit_message_text(
-                            text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-                            "Что вы хотели бы сделать с планом?",
-                            reply_markup=reply_markup,
-                            parse_mode="HTML",
-                        )
-                        await update_chat_mapping(
-                            telegram_id, MENU_OPTIONS, context.user_data
-                        )
-                        return MENU_OPTIONS
-
-        else:
+        if not client:
             logger.warning("Клиент с введенным ID не найден.")
-            if query.message:
-                await query.message.reply_text("Клиент не найден. Попробуйте снова.")
-                await update_chat_mapping(telegram_id, CLIENT_NAME, context.user_data)
+            await query.message.reply_text("Клиент не найден. Попробуйте снова.")
+            await update_chat_mapping(telegram_id, CLIENT_NAME, context.user_data)
             return CLIENT_NAME
+
+        context.user_data["selected_client_id"] = client.id
+
+        plan_type = await client_action(update, context)
+
+        if plan_type == "training":
+            keyboard = [
+                [InlineKeyboardButton("Начальный уровень", callback_data="beginner")],
+                [InlineKeyboardButton("Средний уровень", callback_data="intermediate")],
+                [InlineKeyboardButton("Продвинутый уровень", callback_data="advanced")],
+                [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
+            ]
+            await query.edit_message_text(
+                "Для какого уровня подготовки будет тренировка?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            await update_chat_mapping(telegram_id, TRAINING_WEEK, context.user_data)
+            return TRAINING_WEEK
+
+        elif plan_type == "menu":
+            required_fields = [
+                client.name,
+                client.weight,
+                client.goal,
+                client.calories,
+                client.proteins,
+                client.fats,
+                client.carbs,
+                client.yes_products,
+                client.no_products,
+            ]
+            if any(field is None or field == "" for field in required_fields):
+                await query.edit_message_text(
+                    "Анкета клиента заполнена не до конца. Перейдите в список клиентов в меню и отредактируйте анкету клиента."
+                )
+                await update_chat_mapping(
+                    telegram_id, CHOOSING_ACTION, context.user_data
+                )
+                return MAIN_MENU
+
+            prompt = await creating_plan(update, context)
+            if not prompt:
+                await query.edit_message_text("Не удалось создать промпт.")
+                return MAIN_MENU
+
+            context.user_data["prompt"] = prompt
+
+            # Сообщаем пользователю ДО вызова OpenAI
+            await query.edit_message_text("Минутку, составляю меню!🌀")
+
+            # Получаем ответ
+            response = await generate_response(update, context)
+
+            if not response:
+                return CHOOSING_ACTION
+
+            # Удаляем prompt, чтобы не переиспользовался случайно
+            context.user_data.pop("prompt", None)
+
+            keyboard = [
+                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
+                [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
+                [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
+            ]
+
+            await query.edit_message_text(
+                text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
+                "Что вы хотели бы сделать с планом?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML",
+            )
+            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+            return MENU_OPTIONS
+
     except Coach.DoesNotExist:
         logger.error("Тренер не найден.")
-        if query.message:
-            await query.message.reply_text("Тренер не найден.")
-            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        await query.message.reply_text("Тренер не найден.")
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         return CHOOSING_ACTION
+
     except Exception as e:
         logger.error(f"Произошла ошибка при обработке запроса: {e}")
-        if query.message:
-            await query.message.reply_text("Произошла ошибка при обработке запроса.")
-            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        await query.message.reply_text("Произошла ошибка при обработке запроса.")
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         return CHOOSING_ACTION
 
 
@@ -1842,8 +1817,7 @@ async def client_no_products(update: Update, context: CallbackContext):
 
 
 async def client_calories(update: Update, context: CallbackContext):
-    logger.info("Started client_calories func")
-    telegram_id = context.user_data.get("telegram_id")
+    telegram_id = update.message.from_user.id
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
@@ -1869,10 +1843,7 @@ async def client_calories(update: Update, context: CallbackContext):
     proteins = 1.5 * weight
     fats = 1 * weight
     carbs = 1.7 * weight
-    logger.info(
-        f"client.weight = {client.weight}, client.activity_level = {client.activity_level}, client.goal = {client.goal}"
-    )
-    calories = round(calories)
+
     client.calories = calories
     client.proteins = proteins
     client.fats = fats
@@ -1919,49 +1890,47 @@ async def client_action(update: Update, context: CallbackContext):
 async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
     mapping = await get_chat_mapping(telegram_id)
+
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
         print(f"mapping found and restored: {mapping.state}")
     else:
         return MAIN_MENU
+
     prompt = context.user_data.get("prompt")
+    if not prompt:
+        logger.warning("Пустой prompt при вызове generate_response.")
+        return MAIN_MENU
 
     try:
-        from .tasks import generate_openai_response_task
-
-        # Start the Celery task in a separate thread
-        task = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: generate_openai_response_task.delay(prompt)
+        # Запуск синхронной Celery-задачи в фоне
+        response_text = await asyncio.to_thread(
+            generate_openai_response_task, prompt, telegram_id
         )
 
-        # Wait for the task to complete
-        while True:
-            # Check task status in a separate thread
-            is_ready = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: task.ready()
-            )
+        if not response_text:
+            raise ValueError("OpenAI вернул пустой ответ.")
 
-            if is_ready:
-                break
-            await asyncio.sleep(1)
+        # Сохраняем в context для последующего использования (например, редактирования)
+        context.user_data["response"] = response_text
 
-        # Get the result
-        response = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: task.get(timeout=60)
-        )
-
-        if response is None:
-            raise Exception("Failed to generate response")
-
-        context.user_data["response"] = response
+        # Обновляем состояние и сохраняем контекст
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
 
-        return response
+        return response_text
 
     except Exception as e:
-        logger.error(f"Error in generate_response: {e}")
+        logger.error(f"Ошибка в generate_response: {e}")
+
+        error_message = "Произошла ошибка при генерации ответа. Попробуйте снова."
+
+        if update.callback_query:
+            await update.callback_query.message.reply_text(error_message)
+        else:
+            await update.message.reply_text(error_message)
+
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-        return None
+        return CHOOSING_ACTION
 
 
 async def creating_plan(update: Update, context: CallbackContext):
@@ -1986,7 +1955,6 @@ async def creating_plan(update: Update, context: CallbackContext):
             await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
             return CHOOSING_ACTION
 
-        client.calories = await client_calories(update, context)
         prompt = ""
 
         if plan_type == "menu":
@@ -2123,7 +2091,6 @@ async def menu_options(update: Update, context: CallbackContext):
                 )
 
                 if file_path:
-                    logger.info(f"file_path {file_path}", exc_info=True)
                     with open(file_path, "rb") as file:
                         await query.message.reply_document(
                             document=file, filename=file_path
@@ -2138,7 +2105,6 @@ async def menu_options(update: Update, context: CallbackContext):
                     return MAIN_MENU
 
             except Exception as e:
-                logger.error(f"Error in download_plan_pdf: {str(e)}", exc_info=True)
                 print(f"Error in download_plan_pdf: {str(e)}")
                 await query.message.reply_text(
                     "Произошла ошибка при обработке запроса."
@@ -2208,10 +2174,10 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
         f"На основе следующего комментария обнови план: '{user_comment}'."
     )
     context.user_data["prompt"] = prompt
-    await update.message.reply_text("Минутку, составляю план!🌀")
     response = await generate_response(update, context)
     await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
 
+    await update.message.reply_text("Минутку, составляю план!🌀")
     if response:
         keyboard = [
             [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
@@ -2240,7 +2206,7 @@ class PlanPDF(FPDF):
         self.set_auto_page_break(auto=True, margin=15)
 
         # Set the font path - using a relative path is safer
-        font_path = "/var/www/django_telegram_bot/coach_ai_bot/staticfiles/fonts"
+        font_path = os.path.join(os.path.dirname(__file__), "static", "fonts")
 
         # Add DejaVu fonts with Unicode support
         self.add_font(
@@ -2409,7 +2375,6 @@ async def download_plan_pdf(update: Update, context: CallbackContext):
 
     except Exception as e:
         print(f"Error in download_plan_pdf: {str(e)}")
-        logger.error(f"Error in download_plan_pdf: {str(e)}")
         await query.message.reply_text("Произошла ошибка при обработке запроса.")
         return MAIN_MENU
 
@@ -4158,13 +4123,13 @@ def main():
 
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
+    application.run_polling()
     application.add_handler(CommandHandler("clients", get_clients))
     application.add_handler(CommandHandler("support", get_support))
     application.add_handler(CommandHandler("base", knowledge_base))
     application.add_handler(CommandHandler("edu", education))
     application.add_handler(CommandHandler("new", new_client))
     application.add_handler(CommandHandler("sub", cancel_subscription))
-    application.run_polling()
 
 
 if __name__ == "__main__":
