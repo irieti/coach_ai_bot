@@ -555,26 +555,28 @@ def stripe_webhook(request):
             invoice = event["data"]["object"]
             subscription_id = invoice.get("subscription")
 
+            # Add this check to avoid processing the initial payment invoice
+            if invoice.get("billing_reason") == "subscription_create":
+                # Skip processing for initial subscription creation
+                return JsonResponse({"status": "initial invoice skipped"}, status=200)
+
             try:
                 stripe_sub = stripe.Subscription.retrieve(subscription_id)
-
                 current_period_start = datetime.fromtimestamp(
                     stripe_sub["current_period_start"], tz=timezone.utc
                 )
                 current_period_end = datetime.fromtimestamp(
                     stripe_sub["current_period_end"], tz=timezone.utc
                 )
-
                 subscription = Subscription.objects.get(subscription_id=subscription_id)
                 subscription.start_date = current_period_start
                 subscription.expires_at = current_period_end
                 subscription.status = "active"
                 subscription.save()
-
             except Subscription.DoesNotExist:
                 print("Subscription not found for invoice.paid")
 
-        return JsonResponse({"status": "received"}, status=200)
+            return JsonResponse({"status": "received"}, status=200)
 
     except stripe.error.SignatureVerificationError as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
@@ -1363,8 +1365,9 @@ async def client_name(update: Update, context: CallbackContext):
     action = context.user_data.get("client_action")
 
     if action == "choose_client":
+        coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
         clients = await sync_to_async(Client.objects.filter)(
-            name__icontains=client_name
+            name__icontains=client_name, coach=coach
         )
 
         if await sync_to_async(clients.exists)():
