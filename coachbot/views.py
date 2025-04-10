@@ -1896,11 +1896,17 @@ async def client_action(update: Update, context: CallbackContext):
 ############################## NUTRITION PLAN #####################################
 async def generate_response(update: Update, context: CallbackContext):
     telegram_id = context.user_data.get("telegram_id")
+    mapping = await get_chat_mapping(telegram_id)
+    if mapping and mapping.context:
+        context.user_data.update(mapping.context)
+        print(f"mapping found and restored: {mapping.state}")
+    else:
+        return MAIN_MENU
     prompt = context.user_data.get("prompt")
-
+    """Универсальная функция для обращения к OpenAI."""
     try:
-        logger.info(f"Starting task with prompt: {prompt}")
         client = OpenAI(api_key=OPENAI_API_KEY)
+
         response = client.chat.completions.create(
             messages=[
                 {
@@ -1910,12 +1916,30 @@ async def generate_response(update: Update, context: CallbackContext):
             ],
             model="gpt-4-turbo",
         )
+
         ChatGPT_reply = response.choices[0].message.content
-        logger.info(f"Task completed successfully")
-        return ChatGPT_reply
+
+        messages.append({"role": "assistant", "content": ChatGPT_reply})
+
+        context.user_data["response"] = ChatGPT_reply
+        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+
+        response = ChatGPT_reply
+
+        return response
+
     except Exception as e:
-        logger.error(f"Error in generate_openai_response_task: {e}", exc_info=True)
-        return None
+        logger.error(f"Error in generate_response: {e}")
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                "Произошла ошибка при генерации ответа. Попробуйте снова."
+            )
+        else:
+            await update.message.reply_text(
+                "Произошла ошибка при генерации ответа. Попробуйте снова."
+            )
+            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        return CHOOSING_ACTION
 
 
 async def creating_plan(update: Update, context: CallbackContext):
