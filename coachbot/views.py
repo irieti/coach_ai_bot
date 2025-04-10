@@ -2029,6 +2029,7 @@ async def creating_plan(update: Update, context: CallbackContext):
         context.user_data["prompt"] = prompt
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         prompt = prompt
+        logger.info(f"prompt: {prompt}")
         return prompt
 
     except Exception as e:
