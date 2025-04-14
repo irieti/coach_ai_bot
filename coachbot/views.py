@@ -504,6 +504,7 @@ def verify_signature(data, received_token):
 
 
 def create_stripe_subscription(customer_email, price_id, telegram_id):
+    logger.info("Creating Stripe subscription session")
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
@@ -514,29 +515,38 @@ def create_stripe_subscription(customer_email, price_id, telegram_id):
             success_url="https://example.com/success",
             cancel_url="https://example.com/cancel",
         )
+        logger.info(f"Stripe session created: {session.id}")
         return session.url
     except stripe.error.StripeError as e:
-        print(f"Stripe error: {e}")
+        logger.error(f"Stripe error: {e}")
         return None
 
 
 @csrf_exempt
 def stripe_webhook(request):
+    logger.info("Stripe webhook triggered")
     payload = request.body
     sig_header = request.headers.get("Stripe-Signature")
     endpoint_secret = STRIPE_WEBHOOK_SECRET
 
     try:
+        logger.info("Constructing Stripe event")
         event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+        logger.info(f"Stripe event type: {event['type']}")
 
-        # 🔄 Когда пользователь завершил оплату (первая подписка)
         if event["type"] == "checkout.session.completed":
+            logger.info("Processing checkout.session.completed event")
             session = event["data"]["object"]
             telegram_id = session.get("metadata", {}).get("telegram_id")
             subscription_id = session.get("subscription")
 
+            logger.info(
+                f"telegram_id: {telegram_id}, subscription_id: {subscription_id}"
+            )
+
             try:
                 subscription = Subscription.objects.get(customer_key=telegram_id)
+                logger.info("Subscription object found in DB")
 
                 subscription.start_date = now()
                 subscription.subscription_id = subscription_id
@@ -546,49 +556,61 @@ def stripe_webhook(request):
                 )
                 subscription.save()
 
+                logger.info("Subscription updated and saved")
                 send_telegram_message(
                     telegram_id,
                     "Оплата прошла успешно! Ваша подписка активирована, перейдите в главное меню слева внизу.",
                 )
+                logger.info("Telegram message sent successfully")
                 return JsonResponse({"status": "success"})
 
             except Subscription.DoesNotExist:
+                logger.error("Subscription not found for telegram_id")
                 return JsonResponse(
                     {"status": "error", "message": "Subscription not found"},
                     status=404,
                 )
 
-        # 🔁 Рекуррентный платёж прошёл — обновляем даты
         elif event["type"] == "invoice.paid":
+            logger.info("Processing invoice.paid event")
             invoice = event["data"]["object"]
             subscription_id = invoice.get("subscription")
+            logger.info(f"invoice.paid for subscription_id: {subscription_id}")
 
-            # Add this check to avoid processing the initial payment invoice
             if invoice.get("billing_reason") == "subscription_create":
-                # Skip processing for initial subscription creation
+                logger.info("Initial subscription_create invoice - skipping")
                 return JsonResponse({"status": "initial invoice skipped"}, status=200)
 
             try:
                 stripe_sub = stripe.Subscription.retrieve(subscription_id)
+                logger.info(f"Retrieved stripe subscription: {stripe_sub.id}")
+
                 current_period_start = datetime.fromtimestamp(
                     stripe_sub["current_period_start"], tz=timezone.utc
                 )
                 current_period_end = datetime.fromtimestamp(
                     stripe_sub["current_period_end"], tz=timezone.utc
                 )
+
                 subscription = Subscription.objects.get(subscription_id=subscription_id)
+                logger.info("Subscription object found in DB for invoice.paid")
+
                 subscription.start_date = current_period_start
                 subscription.expires_at = current_period_end
                 subscription.status = "active"
                 subscription.save()
+
+                logger.info("Subscription updated with new period dates")
             except Subscription.DoesNotExist:
-                print("Subscription not found for invoice.paid")
+                logger.error("Subscription not found for invoice.paid")
 
             return JsonResponse({"status": "received"}, status=200)
 
     except stripe.error.SignatureVerificationError as e:
+        logger.error(f"Signature verification error: {e}")
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
     except Exception as e:
+        logger.exception("Unexpected error in webhook handler")
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
 
 
