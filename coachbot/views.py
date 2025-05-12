@@ -288,10 +288,6 @@ def lava_webhook(request):
         if telegram_id:
             subscription = Subscription.objects.filter(customer_key=telegram_id).first()
 
-        # If not found, try by email
-        if not subscription and email:
-            subscription = Subscription.objects.filter(email=email).first()
-
         if not subscription:
             logger.error(f"Subscription not found for customer: {telegram_id or email}")
             return JsonResponse({"error": "Subscription not found"}, status=404)
