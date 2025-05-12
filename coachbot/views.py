@@ -697,7 +697,7 @@ async def sub_handler(update: Update, context: CallbackContext):
             await query.answer("Ошибка выбора")
             return MAIN_MENU
 
-        await subscription.save()
+        await sync_to_async(subscription.save)()
 
         # Ask for email
         await query.edit_message_text("Введите ваш e-mail:")
@@ -708,7 +708,7 @@ async def sub_handler(update: Update, context: CallbackContext):
     # User selected international payment method (Stripe)
     elif query.data == "world":
         subscription.payment_method = "stripe"
-        await subscription.save()
+        await sync_to_async(subscription.save)()
 
         await query.edit_message_text("Введите ваш e-mail:")
 
