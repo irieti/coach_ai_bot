@@ -678,26 +678,6 @@ async def sub_handler(update: Update, context: CallbackContext):
         await update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
         return SUBSCRIPTION
 
-    # User selected a subscription plan
-    elif query.data in ["month_3000", "3month_2300", "6month_1800"]:
-        context.user_data["subscription_choice"] = query.data
-
-        # Ask for payment region
-        keyboard = [
-            [
-                InlineKeyboardButton("Россия", callback_data="rus"),
-                InlineKeyboardButton("Другие страны", callback_data="world"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            "Выберите способ оплаты в зависимости от вашего региона:",
-            reply_markup=reply_markup,
-        )
-
-        await update_chat_mapping(telegram_id, SUB_HANDLER, context.user_data)
-        return SUB_HANDLER
-
     # User selected Russian payment method (Lava)
     elif query.data == "rus":
         subscription.payment_method = "lava"
