@@ -600,14 +600,34 @@ async def subscription(update: Update, context: CallbackContext):
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
         print(f"mapping found and restored: {mapping.state}")
-
     subscription_choice = query.data
     context.user_data["subscription_choice"] = subscription_choice
 
     await query.answer()
-    await query.edit_message_text("Введите ваш e-mail для получения ссылки на оплату:")
-    await update_chat_mapping(telegram_id, CUSTOMER_EMAIL, context.user_data)
-    return CUSTOMER_EMAIL
+    keyboard = [
+        [
+            InlineKeyboardButton("Оплата картой (весь мир)", callback_data="world"),
+        ],
+        [
+            InlineKeyboardButton(
+                "Оплата картой РФ",
+                callback_data="rus",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "Назад к выбору подписки",
+                callback_data="sub",
+            ),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"Выберите метод оплаты:",
+        reply_markup=reply_markup,
+    )
+    await update_chat_mapping(telegram_id, SUB_HANDLER, context.user_data)
+    return SUB_HANDLER
 
 
 async def sub_handler(update: Update, context: CallbackContext):
