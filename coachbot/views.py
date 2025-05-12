@@ -42,6 +42,8 @@ import asyncio
 from django.http import HttpResponse
 from celery.result import AsyncResult
 from openai import OpenAI
+import concurrent.futures
+from functools import partial
 
 load_dotenv()
 
@@ -122,7 +124,6 @@ NEW_CLIENT_NAME = 72
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-
 question = ""
 
 messages = [
@@ -132,11 +133,14 @@ messages = [
     }
 ]
 
-TINKOFF_PASSWORD = os.getenv("TINKOFF_PASSWORD")
-TINKOFF_TERMINAL_KEY = "1743522430515DEMO"
+# TINKOFF_PASSWORD = os.getenv("TINKOFF_PASSWORD")
+# TINKOFF_TERMINAL_KEY = "1743522430515DEMO"
 
 stripe.api_key = os.getenv("STRIPE_API_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+LAVA_API_KEY = os.getenv("LAVA_API_KEY")
+
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
 today = now()
 
@@ -170,195 +174,194 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(commands)
 
 
-def generate_signature(data):
-    print("generate signature func is started")
-    """
-    Функция для генерации подписи для запроса к Тинькофф согласно документации MAPI
-    """
-    values_to_encode = {}
-
-    for key, value in data.items():
-        if not isinstance(value, (dict, list)):
-            values_to_encode[key] = "" if value is None else str(value)
-
-    values_to_encode["Password"] = TINKOFF_PASSWORD
-    print(f"password {TINKOFF_PASSWORD}")
-
-    sorted_keys = sorted(values_to_encode.keys())
-    sorted_values = [values_to_encode[key] for key in sorted_keys]
-
-    print(f"sorted_values:{sorted_values}")
-
-    concatenated = "".join(sorted_values)
-
-    token = hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
-    print(f"{token}")
-
-    return token
-
-
-async def initiate_initial_payment_async(amount, telegram_id):
+async def initiate_payment_async(amount, telegram_id, email, price_id, period):
     """Async wrapper for the synchronous payment function"""
-    return await sync_to_async(initiate_initial_payment)(amount, telegram_id)
+    return await sync_to_async(initiate_payment)(
+        amount, telegram_id, email, price_id, period
+    )
 
 
-def initiate_initial_payment(amount, telegram_id):
-    customer_key = str(telegram_id)
-    rebill_id = str(telegram_id)
-    order_id = f"order_{telegram_id}_{int(time.time())}"
+def initiate_payment(amount, telegram_id, email, price_id, period):
+    """
+    Initialize a payment with Lava.top payment system
+    """
+    # Map subscription choice to correct period
+    periodicity = period
+
+    # Get offer_id based on subscription choice
+    offer_id = price_id
+
+    # Prepare request data
     request_data = {
-        "TerminalKey": TINKOFF_TERMINAL_KEY,
-        "Amount": int(amount * 100),  # Amount in kopecks
-        "OrderId": order_id,
-        "Description": "Initial subscription payment",
-        "DATA": {
-            "telegram_id": telegram_id,
-        },
-        "CustomerKey": customer_key,
-        "Recurrent": "Y",  # Mark as recurring payment
+        "email": email,
+        "offerId": offer_id,
+        "periodicity": periodicity,
+        "currency": "RUB",
+        "paymentMethod": "BANK131",  # Default payment method
+        "buyerLanguage": "RU",
+        "clientUtm": {"telegram_id": str(telegram_id)},
     }
-    # Generate signature
-    print("request_data before signature:")
-    for k, v in request_data.items():
-        if isinstance(v, dict):
-            print(f"{k}: [dict]")
-        else:
-            print(f"{k}: {v} (type: {type(v)})")
-    signature = generate_signature(request_data)
-    request_data["Token"] = signature
-    print(f"{signature}")
-    # Send request
-    response = requests.post("https://securepay.tinkoff.ru/v2/Init", json=request_data)
-    print(f"{response.status_code}")
 
-    if response.status_code == 200:
-        response_data = response.json()  # Define response_data first
-        print(f"{response_data}")  # Then print it
+    # Send request to Lava API
+    headers = {
+        "accept": "application/json",
+        "X-Api-Key": LAVA_API_KEY,
+        "Content-Type": "application/json",
+    }
 
-        if response_data.get("Success"):
-            # Save initial order info
-            subscription, created = Subscription.objects.update_or_create(
-                customer_key=customer_key,
-                rebill_id=rebill_id,
-                defaults={
-                    "status": "pending",
-                    "amount": amount,
-                    "payment_method": "tinkoff",
-                },
-            )
-            subscription.save()
-            return response_data.get("PaymentURL")
-    return None
+    try:
+        response = requests.post(
+            "https://gate.lava.top/api/v2/invoice", headers=headers, json=request_data
+        )
+
+        logger.info(f"Lava payment init response: {response.status_code}")
+
+        if response.status_code == 200:
+            response_data = response.json()
+            logger.info(f"Lava payment response data: {response_data}")
+
+            if "paymentUrl" in response_data:
+                # Save initial subscription info
+                subscription, created = Subscription.objects.update_or_create(
+                    customer_key=str(telegram_id),
+                    defaults={
+                        "status": "pending",
+                        "amount": amount,
+                        "payment_method": "lava",
+                        "email": email,
+                    },
+                )
+
+                # Save contract ID if available
+                if "contractId" in response_data:
+                    subscription.payment_id = response_data["contractId"]
+                    subscription.save()
+
+                return response_data["paymentUrl"]
+
+        logger.error(f"Lava payment error: {response.text}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error initializing Lava payment: {e}")
+        return None
 
 
 @csrf_exempt
-def tinka_webhook(request):
-    logger.info("Webhook received")
-    print("Webhook received")
+def lava_webhook(request):
+    """
+    Handle webhook notifications from Lava.top payment system
+    """
+    logger.info("Lava webhook received")
+
     if request.method != "POST":
-        print("Method not allowed")
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
         data = json.loads(request.body)
         logger.info(f"Webhook data received: {data}")
 
-        # Get token from data
-        token = data.get("Token")
-        logger.info(f"Token received: {token}")
+        # Extract data from webhook
+        event_type = data.get("eventType")
+        status = data.get("status")
+        contract_id = data.get("contractId")
+        parent_contract_id = data.get("parentContractId")
+        email = data.get("buyer", {}).get("email")
 
-        # Verify signature (but allow processing even if verification fails during testing)
-        is_valid = verify_signature(data, token)
-        logger.info(f"Signature valid: {is_valid}")
-        print(f"Signature valid: {is_valid}")
-
-        # For testing, we'll proceed even if signature is invalid
-        # In production, you should uncomment the following lines:
-        if not is_valid:
-            print("Invalid signature")
-            logger.error("Invalid signature")
-            return JsonResponse({"error": "Invalid signature"}, status=400)
-
-        status = data.get("Status")
-        payment_id = data.get("PaymentId")
-        order_id = data.get("OrderId")
-        rebill_id = data.get("RebillId")
+        # Extract telegram_id from clientUtm if available
+        telegram_id = None
+        if "clientUtm" in data and "telegram_id" in data["clientUtm"]:
+            telegram_id = data["clientUtm"]["telegram_id"]
 
         logger.info(
-            f"Status: {status}, PaymentId: {payment_id}, OrderId: {order_id}, RebillId: {rebill_id}"
+            f"Event type: {event_type}, Status: {status}, Contract ID: {contract_id}"
         )
 
-        # Extract customer key from OrderId
-        customer_key = None
-        if order_id and "_" in order_id:
-            parts = order_id.split("_")
-            if len(parts) >= 2:
-                customer_key = parts[1]
-                print(f"Extracted customer_key: {customer_key}")
-
-        if not customer_key:
-            print("Missing customer identification")
+        if not telegram_id and not email:
+            logger.error("Missing customer identification")
             return JsonResponse(
                 {"error": "Missing customer identification"}, status=400
             )
 
-        # Process the subscription update
+        # First try to find subscription by telegram_id
+        subscription = None
+        if telegram_id:
+            subscription = Subscription.objects.filter(customer_key=telegram_id).first()
+
+        # If not found, try by email
+        if not subscription and email:
+            subscription = Subscription.objects.filter(email=email).first()
+
+        if not subscription:
+            logger.error(f"Subscription not found for customer: {telegram_id or email}")
+            return JsonResponse({"error": "Subscription not found"}, status=404)
+
+        # Process subscription based on webhook event type
         with transaction.atomic():
-            subscription = Subscription.objects.filter(
-                customer_key=customer_key
-            ).first()
+            # Save contract IDs
+            if contract_id:
+                subscription.payment_id = contract_id
 
-            if not subscription:
-                print(f"Subscription not found for customer {customer_key}")
-                return JsonResponse({"error": "Subscription not found"}, status=404)
+            if parent_contract_id:
+                subscription.rebill_id = parent_contract_id
 
-            print(
-                f"Found subscription for customer {customer_key}: {subscription.status}"
-            )
+            # Process first payment success
+            if event_type == "payment.success" and status == "subscription-active":
+                handle_payment_success(subscription)
 
-            # For the initial payment that completes successfully
-            if status in ["AUTHORIZED", "CONFIRMED"] and rebill_id:
-                # Save RebillId for future recurring payments
-                subscription.rebill_id = rebill_id
-                print(f"Saved rebill_id: {rebill_id}")
-                subscription.payment_id = payment_id
+                # Send Telegram notification if we have telegram_id
+                if telegram_id:
+                    send_telegram_message(
+                        telegram_id,
+                        "Оплата прошла успешно! Ваша подписка активирована, перейдите в главное меню слева внизу",
+                    )
 
-            if status == "CONFIRMED":
-                subscription.status = "active"
-                subscription.payment_id = payment_id
+            # Process recurring payment success
+            elif (
+                event_type == "subscription.recurring.payment.success"
+                and status == "subscription-active"
+            ):
+                handle_payment_success(subscription)
 
-                if not subscription.start_date or subscription.is_expired():
-                    subscription.start_date = now()
+                if telegram_id:
+                    send_telegram_message(
+                        telegram_id, "Ваша подписка успешно продлена!"
+                    )
 
-                subscription.expires_at = now() + timedelta(
-                    days=subscription.duration_days
-                )
-
-                subscription.save()
-                print(f"Subscription activated for customer {customer_key}")
-
-                # Send Telegram notification
-                send_telegram_message(
-                    customer_key,
-                    "Оплата прошла успешно! Ваша подписка активирована, перейдите в главное меню слева внизу",
-                )
-
-            elif status in ["CANCELED", "REJECTED"]:
+            # Process payment failures
+            elif event_type in [
+                "payment.failed",
+                "subscription.recurring.payment.failed",
+            ]:
                 subscription.status = "pending"
                 subscription.save()
-                print(f"Payment failed for customer {customer_key}, status: {status}")
 
-                # Send Telegram notification
-                send_telegram_message(
-                    customer_key,
-                    "Платеж не прошел. Пожалуйста, проверьте данные карты.",
-                )
+                if telegram_id:
+                    send_telegram_message(
+                        telegram_id,
+                        "Платеж не прошел. Пожалуйста, проверьте данные карты.",
+                    )
 
         return HttpResponse("OK", status=200)
 
     except Exception as e:
-        print(f"Error processing webhook: {e}")
-        return JsonResponse({"error": "Internal server error"}, status=500)
+        logger.error(f"Error processing webhook: {e}")
+        return JsonResponse({"error": f"Internal server error: {str(e)}"}, status=500)
+
+
+def handle_payment_success(subscription):
+    """
+    Update subscription on successful payment
+    """
+    subscription.status = "active"
+
+    if not subscription.start_date or subscription.is_expired():
+        subscription.start_date = now()
+
+    subscription.expires_at = now() + timedelta(days=subscription.duration_days)
+    subscription.save()
+
+    logger.info(f"Subscription activated for customer {subscription.customer_key}")
 
 
 def send_telegram_message(telegram_id, message):
@@ -370,137 +373,6 @@ def send_telegram_message(telegram_id, message):
         asyncio.run(bot.send_message(chat_id=telegram_id, text=message))
     except Exception as e:
         print(f"Ошибка при отправке сообщения в Telegram: {e}")
-
-
-def process_recurring_payment(telegram_id, amount):
-    try:
-        # Get subscription with saved RebillId
-        subscription = Subscription.objects.get(
-            customer_key=telegram_id, status="active"
-        )
-
-        if not subscription.rebill_id:
-            return {
-                "status": "error",
-                "message": "No rebill ID found for recurring payment",
-            }
-
-        # Step 1: Call Init to get PaymentId
-        order_id = f"recur_{telegram_id}_{int(time.time())}"
-        init_data = {
-            "TerminalKey": TINKOFF_TERMINAL_KEY,
-            "Amount": int(amount * 100),
-            "OrderId": order_id,
-            "Description": "Recurring subscription payment",
-        }
-
-        signature = generate_signature(init_data)
-        init_data["Token"] = signature
-
-        init_response = requests.post(
-            "https://securepay.tinkoff.ru/v2/Init", json=init_data
-        )
-
-        if init_response.status_code != 200:
-            return {"status": "error", "message": "Failed to initialize payment"}
-
-        init_result = init_response.json()
-        if not init_result.get("Success"):
-            return {
-                "status": "error",
-                "message": init_result.get("Message", "Payment initialization failed"),
-            }
-
-        payment_id = init_result.get("PaymentId")
-
-        # Step 2: Call Charge with RebillId and PaymentId
-        charge_data = {
-            "TerminalKey": TINKOFF_TERMINAL_KEY,
-            "PaymentId": payment_id,
-            "RebillId": subscription.rebill_id,
-        }
-
-        signature = generate_signature(charge_data)
-        charge_data["Token"] = signature
-
-        charge_response = requests.post(
-            "https://securepay.tinkoff.ru/v2/Charge", json=charge_data
-        )
-
-        if charge_response.status_code != 200:
-            return {"status": "error", "message": "Failed to charge payment"}
-
-        charge_result = charge_response.json()
-        if not charge_result.get("Success"):
-            return {
-                "status": "error",
-                "message": charge_result.get("Message", "Payment charge failed"),
-            }
-
-        # If successful, update subscription
-        if charge_result.get("Status") == "CONFIRMED":
-            subscription.renew(subscription.duration_days)
-            subscription.payment_id = payment_id
-            subscription.save()
-
-            # Notify customer
-            send_telegram_message(telegram_id, "Ваша подписка успешно продлена!")
-
-            return {"status": "success", "message": "Subscription renewed successfully"}
-        else:
-            return {"status": "pending", "message": "Payment is processing"}
-
-    except Subscription.DoesNotExist:
-        return {"status": "error", "message": "No active subscription found"}
-    except Exception as e:
-        logger.error(f"Error in recurring payment: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-def verify_signature(data, received_token):
-    """
-    Verify Tinkoff payment notification signature according to their documentation
-    with improved debugging and handling of different data types
-    """
-    logger.info("started verifying")
-    # Create a copy of the data without the Token field
-    data_copy = {
-        k: v for k, v in data.items() if k != "Token" and k not in ["Receipt", "DATA"]
-    }
-
-    # Add password
-    data_copy["Password"] = TINKOFF_PASSWORD
-    logger.info(f"T PASSWORD{TINKOFF_PASSWORD}")
-
-    # Convert all values to strings with special handling for booleans
-    data_copy = {
-        k: "true" if v is True else "false" if v is False else str(v)
-        for k, v in data_copy.items()
-    }
-    logger.info(f"data_copy {data_copy}")
-
-    # Print the prepared data for debugging
-    print("Prepared data for signature calculation:")
-    for k in sorted(data_copy.keys()):
-        print(f"  {k}: {data_copy[k]}")
-
-    # Sort alphabetically by key
-    sorted_values = [data_copy[key] for key in sorted(data_copy.keys())]
-    logger.info(f"sorted_values: {sorted_values}")
-
-    # Concatenate all values
-    concat_string = "".join(sorted_values)
-    logger.info(f"Concatenated string: {concat_string}")
-
-    # Apply SHA-256 hash function
-    import hashlib
-
-    calculated_token = hashlib.sha256(concat_string.encode("utf-8")).hexdigest()
-    logger.info(f"Calculated token: {calculated_token}")
-    logger.info(f"Received token: {received_token}")
-
-    # Compare with the received token
-    return calculated_token.lower() == received_token.lower()
 
 
 def create_stripe_subscription(customer_email, price_id, telegram_id):
@@ -728,34 +600,14 @@ async def subscription(update: Update, context: CallbackContext):
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
         print(f"mapping found and restored: {mapping.state}")
+
     subscription_choice = query.data
     context.user_data["subscription_choice"] = subscription_choice
 
     await query.answer()
-    keyboard = [
-        [
-            InlineKeyboardButton("Оплата картой (весь мир)", callback_data="world"),
-        ],
-        [
-            InlineKeyboardButton(
-                "Оплата картой РФ",
-                callback_data="rus",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "Назад к выбору подписки",
-                callback_data="sub",
-            ),
-        ],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"Выберите метод оплаты:",
-        reply_markup=reply_markup,
-    )
-    await update_chat_mapping(telegram_id, SUB_HANDLER, context.user_data)
-    return SUB_HANDLER
+    await query.edit_message_text("Введите ваш e-mail для получения ссылки на оплату:")
+    await update_chat_mapping(telegram_id, CUSTOMER_EMAIL, context.user_data)
+    return CUSTOMER_EMAIL
 
 
 async def sub_handler(update: Update, context: CallbackContext):
@@ -770,7 +622,9 @@ async def sub_handler(update: Update, context: CallbackContext):
         customer_key=telegram_id, coach=coach, rebill_id=telegram_id
     )
     choice = context.user_data.get("subscription_choice")
+
     if query.data == "sub":
+        # Show subscription options
         keyboard = [
             [
                 InlineKeyboardButton(
@@ -797,17 +651,38 @@ async def sub_handler(update: Update, context: CallbackContext):
             "<b>Бот использует ИИ</b>, поэтому подписка платная, но он сэкономит тебе часы работы!\n<b>Выбери подходящий тариф</b>\n"
             "<a href='https://www.basetraining.site/bot-offer'>ОФЕРТА</a>, <a href='https://www.basetraining.site/policy'>Политика конфиденциальности</a>.",
             reply_markup=reply_markup,
-            parse_mode="HTML",  # Позволяет использовать разметку Markdown для ссылок
+            parse_mode="HTML",
         )
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
-
         return SUBSCRIPTION
 
-    elif query.data == "rus":
-        subscription.payment_method = "tinkoff"
+    # User selected a subscription plan
+    elif query.data in ["month_3000", "3month_2300", "6month_1800"]:
+        context.user_data["subscription_choice"] = query.data
 
+        # Ask for payment region
+        keyboard = [
+            [
+                InlineKeyboardButton("Россия", callback_data="rus"),
+                InlineKeyboardButton("Другие страны", callback_data="world"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "Выберите способ оплаты в зависимости от вашего региона:",
+            reply_markup=reply_markup,
+        )
+
+        await update_chat_mapping(telegram_id, SUB_HANDLER, context.user_data)
+        return SUB_HANDLER
+
+    # User selected Russian payment method (Lava)
+    elif query.data == "rus":
+        subscription.payment_method = "lava"
+
+        # Set subscription parameters based on choice
+        choice = context.user_data.get("subscription_choice")
         if choice == "month_3000":
             subscription.amount = 3000
             subscription.duration_days = 30
@@ -821,19 +696,22 @@ async def sub_handler(update: Update, context: CallbackContext):
             await query.answer("Ошибка выбора")
             return MAIN_MENU
 
-        payment_url = await initiate_initial_payment_async(
-            subscription.amount, telegram_id
-        )  # Здесь вызовите вашу функцию для запроса к Тинькофф
-        await query.edit_message_text(
-            f"Перейдите по следующей ссылке для оплаты: {payment_url}",
-        )
+        await subscription.save()
 
-    elif query.data == "world":
-        subscription.payment_method = "stripe"
+        # Ask for email
         await query.edit_message_text("Введите ваш e-mail:")
 
         await update_chat_mapping(telegram_id, CUSTOMER_EMAIL, context.user_data)
+        return CUSTOMER_EMAIL
 
+    # User selected international payment method (Stripe)
+    elif query.data == "world":
+        subscription.payment_method = "stripe"
+        await subscription.save()
+
+        await query.edit_message_text("Введите ваш e-mail:")
+
+        await update_chat_mapping(telegram_id, CUSTOMER_EMAIL, context.user_data)
         return CUSTOMER_EMAIL
 
 
@@ -844,34 +722,90 @@ async def customer_email(update: Update, context: CallbackContext):
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
         print(f"mapping found and restored: {mapping.state}")
+
     context.user_data["customer_email"] = customer_email
-    telegram_id = context.user_data.get("telegram_id")
+
+    # Get subscription and update email
     subscription = await sync_to_async(Subscription.objects.get)(
         customer_key=telegram_id
     )
+    await sync_to_async(subscription.save)()
 
     choice = context.user_data.get("subscription_choice")
+    payment_method = subscription.payment_method
 
-    if choice == "month_3000":
-        subscription.amount = 30
-        subscription.duration_days = 30
-        price_id = "price_1R1rEjAnFE16axxx9nhRX3dn"
-    elif choice == "3month_2300":
-        subscription.amount = 69
-        subscription.duration_days = 90
-        price_id = "price_1R1rGaAnFE16axxxbwK52VBt"
-    elif choice == "6month_1800":
-        subscription.amount = 108
-        subscription.duration_days = 180
-        price_id = "price_1R1rHQAnFE16axxxnFqy9K3l"
-    else:
-        await update.message.reply_text("Ошибка выбора")
-        return MAIN_MENU
-    url = create_stripe_subscription(customer_email, price_id, telegram_id)
-    if url:
-        await update.message.reply_text(
-            f'Ваша <a href="{url}">ссылка на оплату</a>', parse_mode="HTML"
+    # Handle payment based on method
+    if payment_method == "stripe":
+        # For Stripe (international payments)
+        if choice == "month_3000":
+            subscription.amount = 30
+            subscription.duration_days = 30
+            price_id = "price_1R1rEjAnFE16axxx9nhRX3dn"
+        elif choice == "3month_2300":
+            subscription.amount = 69
+            subscription.duration_days = 90
+            price_id = "price_1R1rGaAnFE16axxxbwK52VBt"
+        elif choice == "6month_1800":
+            subscription.amount = 108
+            subscription.duration_days = 180
+            price_id = "price_1R1rHQAnFE16axxxnFqy9K3l"
+        else:
+            await update.message.reply_text("Ошибка выбора")
+            return MAIN_MENU
+
+        await sync_to_async(subscription.save)()
+
+        # Create Stripe payment link
+        url = create_stripe_subscription(customer_email, price_id, telegram_id)
+        if url:
+            await update.message.reply_text(
+                f'Ваша <a href="{url}">ссылка на оплату</a>', parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text(
+                "Произошла ошибка при создании платежа. Пожалуйста, попробуйте позже."
+            )
+
+    elif payment_method == "lava":
+        # For Lava (Russian payments)
+        if choice == "month_3000":
+            subscription.amount = 3000
+            subscription.duration_days = 30
+            price_id = "8007e933-162e-4136-8bc7-35ecc33582ac"
+            period = "MONTHLY"
+        elif choice == "3month_2300":
+            subscription.amount = 6900
+            subscription.duration_days = 90
+            price_id = "8007e933-162e-4136-8bc7-35ecc33582ac"
+            period = "PERIOD_90_DAYS"
+        elif choice == "6month_1800":
+            subscription.amount = 10800
+            subscription.duration_days = 180
+            price_id = "8007e933-162e-4136-8bc7-35ecc33582ac"
+            period = "PERIOD_180_DAYS"
+        else:
+            await update.message.reply_text("Ошибка выбора")
+            return MAIN_MENU
+
+        # Generate Lava payment link
+        payment_url = await initiate_payment_async(
+            subscription.amount, telegram_id, customer_email, price_id, period
         )
+
+        if payment_url:
+            await update.message.reply_text(
+                f'Ваша <a href="{payment_url}">ссылка на оплату</a>\n\n'
+                f"После оплаты вы получите уведомление об активации подписки.",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                "Произошла ошибка при создании платежа. Пожалуйста, попробуйте позже."
+            )
+
+    # Update chat mapping to return to main menu after payment link is sent
+    await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+    return MAIN_MENU
 
 
 async def cancel_subscription(update: Update, context: CallbackContext):
@@ -1520,17 +1454,25 @@ async def client_selection(update: Update, context: CallbackContext):
                 return MAIN_MENU
 
             prompt = await creating_plan(update, context)
-            if not prompt:
-                await query.edit_message_text("Не удалось создать промпт.")
-                return MAIN_MENU
 
-            context.user_data["prompt"] = prompt
+            if prompt:
 
-            # Сообщаем пользователю ДО вызова OpenAI
-            await query.edit_message_text("Минутку, составляю меню!🌀")
+                waiting_message = await query.message.reply_text(
+                    "Минутку, составляю план!🌀"
+                )
+
+                context.user_data["prompt"] = prompt
+                context.user_data["state"] = MENU_OPTIONS
+
+            context.user_data["state"] = MENU_OPTIONS
 
             # Получаем ответ
             response = await generate_response(update, context)
+
+            try:
+                await waiting_message.delete()
+            except Exception as e:
+                logger.error(f"Error deleting waiting message: {e}")
 
             if not response:
                 return CHOOSING_ACTION
@@ -1538,18 +1480,28 @@ async def client_selection(update: Update, context: CallbackContext):
             # Удаляем prompt, чтобы не переиспользовался случайно
             context.user_data.pop("prompt", None)
 
-            keyboard = [
-                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-                [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
-                [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-            ]
+            if response:
 
-            await query.edit_message_text(
-                text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-                "Что вы хотели бы сделать с планом?",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML",
-            )
+                keyboard = [
+                    [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
+                    [
+                        InlineKeyboardButton(
+                            "Скачать в PDF", callback_data="download_pdf"
+                        )
+                    ],
+                    [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
+                ]
+
+                await query.edit_message_text(
+                    text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
+                    "Что вы хотели бы сделать с планом?",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML",
+                )
+
+            if not prompt:
+                await query.edit_message_text("Не удалось создать промпт.")
+                return MAIN_MENU
             await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
             return MENU_OPTIONS
 
@@ -1592,8 +1544,13 @@ async def plan_handler(update: Update, context: CallbackContext):
             return CHOOSING_MUSCLE_GROUP
     prompt = await creating_plan(update, context)
     if prompt:
-        await query.message.reply_text("Минутку, составляю план!🌀")
+        waiting_message = await query.message.reply_text("Минутку, составляю план!🌀")
+        context.user_data["state"] = MENU_OPTIONS
         response = await generate_response(update, context)
+        try:
+            await waiting_message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting waiting message: {e}")
         if response:
             keyboard = [
                 [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
@@ -1819,10 +1776,17 @@ async def client_no_products(update: Update, context: CallbackContext):
                 )
                 await update_chat_mapping(telegram_id, TRAINING_WEEK, context.user_data)
                 return TRAINING_WEEK
-            await update.message.reply_text("Минутку, составляю план!🌀")
             prompt = await creating_plan(update, context)
             if prompt:
+                waiting_message = await update.message.reply_text(
+                    "Минутку, составляю план!🌀"
+                )
+                context.user_data["state"] = MENU_OPTIONS
                 response = await generate_response(update, context)
+                try:
+                    await waiting_message.delete()
+                except Exception as e:
+                    logger.error(f"Error deleting waiting message: {e}")
                 if response:
                     keyboard = [
                         [
@@ -1919,39 +1883,75 @@ async def client_action(update: Update, context: CallbackContext):
 
 
 ############################## NUTRITION PLAN #####################################
-async def generate_response(update: Update, context: CallbackContext):
+def _generate_openai_response(prompt, api_key):
+    """Run the OpenAI API call in a separate thread."""
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4-turbo",
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error in OpenAI API call: {e}")
+        return None
+
+
+async def generate_response(update: Update, context: CallbackContext, send_typing=True):
+    """Asynchronously generate a response from OpenAI using a thread pool."""
     telegram_id = context.user_data.get("telegram_id")
+
+    # Restore context if available
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
         print(f"mapping found and restored: {mapping.state}")
     else:
-        return MAIN_MENU
-    prompt = context.user_data.get("prompt")
-    """Универсальная функция для обращения к OpenAI."""
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        return None
 
-        response = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="gpt-4-turbo",
+    prompt = context.user_data.get("prompt")
+    if not prompt:
+        logger.error("No prompt found in user data")
+        return None
+
+    # Send "typing" action if requested
+    if send_typing:
+        chat_id = None
+        if update.callback_query:
+            chat_id = update.callback_query.message.chat_id
+        elif update.message:
+            chat_id = update.message.chat_id
+
+        if chat_id:
+            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    try:
+        # Create a partial function with the API key
+        func = partial(_generate_openai_response, prompt, OPENAI_API_KEY)
+
+        # Run the function in the thread pool
+        response_text = await asyncio.get_event_loop().run_in_executor(
+            thread_pool, func
         )
 
-        ChatGPT_reply = response.choices[0].message.content
+        if response_text:
+            # Store response in context
+            context.user_data["response"] = response_text
+            messages = context.user_data.get("messages", [])
+            messages.append({"role": "assistant", "content": response_text})
+            context.user_data["messages"] = messages
 
-        messages.append({"role": "assistant", "content": ChatGPT_reply})
+            # Update the chat mapping
+            current_state = context.user_data.get("state", CHOOSING_ACTION)
+            await update_chat_mapping(telegram_id, current_state, context.user_data)
 
-        context.user_data["response"] = ChatGPT_reply
-        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+            return response_text
+        else:
+            return None
 
-        response = ChatGPT_reply
-
-        return response
+    except Exception as e:
+        logger.error(f"Error in generate_response: {e}")
+        return None
 
     except Exception as e:
         logger.error(f"Error in generate_response: {e}")
@@ -2212,10 +2212,15 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
         f"На основе следующего комментария обнови план: '{user_comment}'."
     )
     context.user_data["prompt"] = prompt
-    response = await generate_response(update, context)
     await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
 
-    await update.message.reply_text("Минутку, составляю план!🌀")
+    waiting_message = await update.message.reply_text("Минутку, составляю план!🌀")
+    context.user_data["state"] = MENU_OPTIONS
+    response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         keyboard = [
             [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
@@ -2793,8 +2798,16 @@ async def effect(update: Update, context: CallbackContext):
     """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
-    await update.message.reply_text("Опрашиваю маркетологов, одну минутку!🌀")
+
+    waiting_message = await update.message.reply_text(
+        "Опрашиваю маркетологов, одну минутку!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     telegram_id = context.user_data.get("telegram_id")
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     if response:
@@ -2874,7 +2887,15 @@ async def edit_pos_handler(update: Update, context: CallbackContext):
     Это позиционирование и стратегия, которые ты составил для тренера {coach} - {response}, измени его в соответсвие с этим комменатрием {comment}"
     """
     context.user_data["prompt"] = prompt
+    waiting_message = await update.message.reply_text(
+        "Опрашиваю маркетологов, одну минутку!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["response"] = response
         keyboard = [
@@ -2980,7 +3001,6 @@ async def content_prompt(update: Update, context: CallbackContext):
     positioning = coach.positioning
     social_media = context.user_data.get("social_media")
     context.user_data["content_goal"] = content_goal
-    await query.edit_message_text("Минутку, опрашиваю аудиторию!🌀")
 
     if content_goal == "followers":
         prompt = (
@@ -3018,7 +3038,15 @@ async def content_prompt(update: Update, context: CallbackContext):
 
         context.user_data["prompt"] = prompt
         await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
-        response = await generate_response(update, context)
+    waiting_message = await update.message.reply_text(
+        "Опрашиваю аудиторию, одну минутку!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
+    response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
         if response:
             context.user_data["content"] = response
             await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
@@ -3041,7 +3069,7 @@ async def content_prompt(update: Update, context: CallbackContext):
             )
             return CONTENT_PROMPT_HANDLER
 
-    elif content_goal == "sales":
+    if content_goal == "sales":
         await query.edit_message_text("Расскажите подробно о своей услуге/продукте")
         await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
         return CONTENT_SALES
@@ -3083,7 +3111,13 @@ async def content_change(update: Update, context: CallbackContext):
     prompt = f"Это сгенерированный контент план для тренера {content}, скорректируй его на основе этого комментария {content_change}"
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
+    waiting_message = await update.message.reply_text("Одну минутку!🌀")
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["content"] = response
         await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
@@ -3156,7 +3190,13 @@ async def content_sales(update: Update, context: CallbackContext):
         """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
+    waiting_message = await update.message.reply_text("Одну минутку!🌀")
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["content"] = response
         await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
@@ -3220,8 +3260,15 @@ async def text_generation(update: Update, context: CallbackContext):
 """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
-    await update.message.reply_text("Минутку! Опрашиваю тысячу копирайтеров!🌀")
+    waiting_message = await update.message.reply_text(
+        "Минутку! Опрашиваю тысячу копирайтеров!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["text"] = response
         await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
@@ -3278,8 +3325,15 @@ async def text_change(update: Update, context: CallbackContext):
     prompt = f"Это сгенерированный текст пользователя {text}, измени его с учетом следубщих комментариев {text_change} и сделай снова три варианта меню"
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
-    await update.message.reply_text("Минутку! Снова опрашиваю тысячу копирайтеров!🌀")
+    waiting_message = await update.message.reply_text(
+        "Минутку! Снова опрашиваю тысячу копирайтеров!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["text"] = response
         await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
@@ -3341,8 +3395,15 @@ async def reels_generation(update: Update, context: CallbackContext):
 
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, REELS_GENERATION, context.user_data)
-    await update.message.reply_text("Минутку! Опрашиваю тысячу рилсмейкеров!🌀")
+    waiting_message = await update.message.reply_text(
+        "Минутку! Опрашиваю тысячу рилсмейкеров!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["text"] = response
         await update_chat_mapping(telegram_id, REELS_GENERATION, context.user_data)
@@ -3400,7 +3461,15 @@ async def reels_change(update: Update, context: CallbackContext):
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
     await update.message.reply_text("Минутку! Снова опрашиваю тысячу рилсмейкеров!🌀")
+    waiting_message = await update.message.reply_text(
+        "Минутку! Снова опрашиваю тысячу рилсмейкеров!🌀"
+    )
+    context.user_data["state"] = MENU_OPTIONS
     response = await generate_response(update, context)
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
     if response:
         context.user_data["text"] = response
         await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
