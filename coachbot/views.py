@@ -770,7 +770,7 @@ async def customer_email(update: Update, context: CallbackContext):
     elif payment_method == "lava":
         # For Lava (Russian payments)
         if choice == "month_3000":
-            subscription.amount = 3
+            subscription.amount = 3000
             subscription.duration_days = 30
             price_id = "8007e933-162e-4136-8bc7-35ecc33582ac"
             period = "MONTHLY"
