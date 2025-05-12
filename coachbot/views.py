@@ -216,7 +216,7 @@ def initiate_payment(amount, telegram_id, email, price_id, period):
 
         logger.info(f"Lava payment init response: {response.status_code}")
 
-        if response.status_code == 200:
+        if response.status_code == 201:
             response_data = response.json()
             logger.info(f"Lava payment response data: {response_data}")
 
