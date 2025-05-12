@@ -596,6 +596,7 @@ def get_subscription(coach):
 async def subscription(update: Update, context: CallbackContext):
     query = update.callback_query
     telegram_id = query.from_user.id
+    context.user_data["telegram_id"] = telegram_id
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
