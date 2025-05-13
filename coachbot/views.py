@@ -268,32 +268,46 @@ def lava_webhook(request):
         email = data.get("buyer", {}).get("email")
 
         # Extract telegram_id from clientUtm if available
-        telegram_id = None
+        webhook_telegram_id = None
         if "clientUtm" in data and "telegram_id" in data["clientUtm"]:
-            telegram_id = data["clientUtm"]["telegram_id"]
+            webhook_telegram_id = data["clientUtm"]["telegram_id"]
 
         logger.info(
             f"Event type: {event_type}, Status: {status}, Contract ID: {contract_id}"
         )
 
-        if not telegram_id and not email:
+        if not webhook_telegram_id and not email:
             logger.error("Missing customer identification")
             return JsonResponse(
                 {"error": "Missing customer identification"}, status=400
             )
 
-        # First try to find subscription by telegram_id
+        # First try to find subscription by telegram_id from webhook
         subscription = None
-        if telegram_id:
-            subscription = Subscription.objects.filter(customer_key=telegram_id).first()
+        if webhook_telegram_id:
+            subscription = Subscription.objects.filter(
+                customer_key=webhook_telegram_id
+            ).first()
 
         # If not found, try by email
         if not subscription and email:
             subscription = Subscription.objects.filter(email=email).first()
 
         if not subscription:
-            logger.error(f"Subscription not found for customer: {telegram_id or email}")
+            logger.error(
+                f"Subscription not found for customer: {webhook_telegram_id or email}"
+            )
             return JsonResponse({"error": "Subscription not found"}, status=404)
+
+        # Get the telegram_id from the subscription object if we didn't have it from webhook
+        telegram_id = webhook_telegram_id
+        if not telegram_id:
+            # If we found the subscription by email, get the coach's telegram_id
+            if hasattr(subscription, "coach") and subscription.coach:
+                telegram_id = subscription.coach.telegram_id
+                logger.info(
+                    f"Found telegram_id {telegram_id} from subscription's coach"
+                )
 
         # Process subscription based on webhook event type
         with transaction.atomic():
