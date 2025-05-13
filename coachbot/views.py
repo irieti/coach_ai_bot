@@ -157,6 +157,31 @@ logging.basicConfig(
 job_queue = JobQueue()
 
 
+async def handle_ai_response(update: Update, context: CallbackContext, waiting_message):
+    response = await generate_response(update, context)
+    context.user_data["response"] = response
+
+    try:
+        await waiting_message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting waiting message: {e}")
+
+    if not response:
+        await update.callback_query.message.reply_text("Не удалось сгенерировать план.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
+    ]
+
+    await update.callback_query.message.reply_text(
+        text=f"Готово:\n\n{response}\n\n",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML",
+    )
+    return MAIN_MENU
+
+
 @sync_to_async
 def update_chat_mapping(telegram_id, state=None, context=None):
     mapping, created = ChatMapping.objects.update_or_create(
@@ -1581,42 +1606,19 @@ async def client_selection(update: Update, context: CallbackContext):
             context.user_data["state"] = MENU_OPTIONS
 
             # Получаем ответ
-            response = await generate_response(update, context)
+            waiting_message = await query.message.reply_text(
+                "Минутку, составляю план!🌀"
+            )
+            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+
+            # Background task that continues the flow without blocking other users
+            asyncio.create_task(handle_ai_response(update, context, waiting_message))
 
             try:
                 await waiting_message.delete()
             except Exception as e:
                 logger.error(f"Error deleting waiting message: {e}")
 
-            if not response:
-                return CHOOSING_ACTION
-
-            # Удаляем prompt, чтобы не переиспользовался случайно
-            context.user_data.pop("prompt", None)
-
-            if response:
-
-                keyboard = [
-                    [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-                    [
-                        InlineKeyboardButton(
-                            "Скачать в PDF", callback_data="download_pdf"
-                        )
-                    ],
-                    [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-                ]
-
-                await query.edit_message_text(
-                    text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-                    "Что вы хотели бы сделать с планом?",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML",
-                )
-
-            if not prompt:
-                await query.edit_message_text("Не удалось создать промпт.")
-                return MAIN_MENU
-            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
             return MENU_OPTIONS
 
     except Coach.DoesNotExist:
@@ -1660,26 +1662,12 @@ async def plan_handler(update: Update, context: CallbackContext):
     if prompt:
         waiting_message = await query.message.reply_text("Минутку, составляю план!🌀")
         context.user_data["state"] = MENU_OPTIONS
-        response = await generate_response(update, context)
+        await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+        asyncio.create_task(handle_ai_response(update, context, waiting_message))
         try:
             await waiting_message.delete()
         except Exception as e:
             logger.error(f"Error deleting waiting message: {e}")
-        if response:
-            keyboard = [
-                [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-                [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
-                [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await query.message.reply_text(
-                text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-                "Что вы хотели бы сделать с планом?",
-                reply_markup=reply_markup,
-                parse_mode="HTML",
-            )
-            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
             return MENU_OPTIONS
 
 
@@ -1896,35 +1884,17 @@ async def client_no_products(update: Update, context: CallbackContext):
                     "Минутку, составляю план!🌀"
                 )
                 context.user_data["state"] = MENU_OPTIONS
-                response = await generate_response(update, context)
+                await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+
+                # Background task that continues the flow without blocking other users
+                asyncio.create_task(
+                    handle_ai_response(update, context, waiting_message)
+                )
+
                 try:
                     await waiting_message.delete()
                 except Exception as e:
                     logger.error(f"Error deleting waiting message: {e}")
-                if response:
-                    keyboard = [
-                        [
-                            InlineKeyboardButton(
-                                "Редактировать", callback_data="edit_menu"
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                "Скачать в PDF", callback_data="download_pdf"
-                            )
-                        ],
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
-                    await update.message.reply_text(
-                        text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-                        "Что вы хотели бы сделать с планом?",
-                        reply_markup=reply_markup,
-                        parse_mode="HTML",
-                    )
-                    await update_chat_mapping(
-                        telegram_id, MENU_OPTIONS, context.user_data
-                    )
                     return MENU_OPTIONS
 
 
@@ -2333,26 +2303,12 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
 
     waiting_message = await update.message.reply_text("Минутку, составляю план!🌀")
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    await update_chat_mapping(telegram_id, EDIT_PLAN_COMMENT, context.user_data)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        keyboard = [
-            [InlineKeyboardButton("Редактировать", callback_data="edit_menu")],
-            [InlineKeyboardButton("Скачать в PDF", callback_data="download_pdf")],
-            [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            text=f"Вот ваш персонализированный план:\n\n{response}\n\n"
-            "Что вы хотели бы сделать с планом?",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
-        await update_chat_mapping(telegram_id, EDIT_PLAN_COMMENT, context.user_data)
         return MENU_OPTIONS
 
 
@@ -2920,30 +2876,15 @@ async def effect(update: Update, context: CallbackContext):
         "Опрашиваю маркетологов, одну минутку!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
     telegram_id = context.user_data.get("telegram_id")
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
-    if response:
-        coach.positioning = response
-        await sync_to_async(coach.save)()
-        context.user_data["response"] = response
-        keyboard = [
-            [InlineKeyboardButton("Редактировать", callback_data="edit_pos")],
-            [InlineKeyboardButton("Сохранить", callback_data="save_pos")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"<b>Определил твое позиционирование, как тебе?</b>\n{response}\nЧто хочешь сделать?",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
-        await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
-        return POSITIONING
+    await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
+    return POSITIONING
 
 
 async def positioning(update: Update, context: CallbackContext):
@@ -3008,24 +2949,11 @@ async def edit_pos_handler(update: Update, context: CallbackContext):
         "Опрашиваю маркетологов, одну минутку!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["response"] = response
-        keyboard = [
-            [InlineKeyboardButton("Редактировать", callback_data="edit_pos")],
-            [InlineKeyboardButton("Сохранить", callback_data="save_pos")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"Определил твое позиционирование, как тебе?\n{response}\nЧто хочешь сделать?",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
         return POSITIONING
 
@@ -3159,32 +3087,15 @@ async def content_prompt(update: Update, context: CallbackContext):
         "Опрашиваю аудиторию, одну минутку!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-        if response:
-            context.user_data["content"] = response
-            await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
-            keyboard = [
-                [InlineKeyboardButton("Да", callback_data="yes")],
-                [
-                    InlineKeyboardButton(
-                        "Нет, вернуться в главное меню", callback_data="main_menu"
-                    )
-                ],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                f"{response}. Хотите добавить что-то еще?",
-                reply_markup=reply_markup,
-                parse_mode="HTML",
-            )
-            await update_chat_mapping(
-                telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
-            )
-            return CONTENT_PROMPT_HANDLER
+        await update_chat_mapping(
+            telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
+        )
+        return CONTENT_PROMPT_HANDLER
 
     if content_goal == "sales":
         await query.edit_message_text("Расскажите подробно о своей услуге/продукте")
@@ -3230,28 +3141,11 @@ async def content_change(update: Update, context: CallbackContext):
     await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
     waiting_message = await update.message.reply_text("Одну минутку!🌀")
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["content"] = response
-        await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
-        keyboard = [
-            [InlineKeyboardButton("Да", callback_data="yes")],
-            [
-                InlineKeyboardButton(
-                    "Нет, вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"{response}.\n<b>Хотите добавить что-то еще?</b>",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(
             telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
         )
@@ -3309,28 +3203,11 @@ async def content_sales(update: Update, context: CallbackContext):
     await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
     waiting_message = await update.message.reply_text("Одну минутку!🌀")
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["content"] = response
-        await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
-        keyboard = [
-            [InlineKeyboardButton("Да", callback_data="yes")],
-            [
-                InlineKeyboardButton(
-                    "Нет, вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"{response}.\n<b>Хотите добавить что-то еще?</b>",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(
             telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
         )
@@ -3381,28 +3258,11 @@ async def text_generation(update: Update, context: CallbackContext):
         "Минутку! Опрашиваю тысячу копирайтеров!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["text"] = response
-        await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
-        keyboard = [
-            [InlineKeyboardButton("Да", callback_data="yes")],
-            [
-                InlineKeyboardButton(
-                    "Нет, вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"Вот ваш текст: {response}.\n<b>Хотите добавить что-то еще?</b>",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
         return TEXT_PROMPT_HANDLER
     else:
@@ -3446,28 +3306,11 @@ async def text_change(update: Update, context: CallbackContext):
         "Минутку! Снова опрашиваю тысячу копирайтеров!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["text"] = response
-        await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
-        keyboard = [
-            [InlineKeyboardButton("Да", callback_data="yes")],
-            [
-                InlineKeyboardButton(
-                    "Нет, вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"Вот ваш текст: {response}.\n<b>Хотите добавить что-то еще?</b>",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
         return TEXT_PROMPT_HANDLER
     else:
@@ -3516,28 +3359,11 @@ async def reels_generation(update: Update, context: CallbackContext):
         "Минутку! Опрашиваю тысячу рилсмейкеров!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["text"] = response
-        await update_chat_mapping(telegram_id, REELS_GENERATION, context.user_data)
-        keyboard = [
-            [InlineKeyboardButton("Да", callback_data="yes")],
-            [
-                InlineKeyboardButton(
-                    "Нет, вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"Вот ваш текст для рилс:\n {response}.\n<b>Хотите добавить что-то еще?</b>",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
         return REELS_PROMPT_HANDLER
     else:
@@ -3582,28 +3408,11 @@ async def reels_change(update: Update, context: CallbackContext):
         "Минутку! Снова опрашиваю тысячу рилсмейкеров!🌀"
     )
     context.user_data["state"] = MENU_OPTIONS
-    response = await generate_response(update, context)
+    asyncio.create_task(handle_ai_response(update, context, waiting_message))
     try:
         await waiting_message.delete()
     except Exception as e:
         logger.error(f"Error deleting waiting message: {e}")
-    if response:
-        context.user_data["text"] = response
-        await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
-        keyboard = [
-            [InlineKeyboardButton("Да", callback_data="yes")],
-            [
-                InlineKeyboardButton(
-                    "Нет, вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"Вот ваш текст для рилс: {response}.\n<b>Хотите добавить что-то еще?</b>",
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
         await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
         return REELS_PROMPT_HANDLER
     else:
