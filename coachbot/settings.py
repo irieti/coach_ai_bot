@@ -12,7 +12,6 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
-from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,25 +43,6 @@ ALLOWED_HOSTS = [
     "1990-2001-8a0-556c-1500-7d22-9c5a-36fd-d653.ngrok-free.app",
 ]
 
-# Celery settings
-CELERY_BROKER_URL = "redis://localhost:6379/0"
-CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "UTC"  # Change to your timezone
-# Application definition
-
-CELERY_BEAT_SCHEDULE = {
-    "check-expired-subscriptions-daily": {
-        "task": "your_app.tasks.check_expired_subscriptions",
-        "schedule": crontab(hour=1, minute=0),  # Run at 1 AM every day
-    },
-}
-
-# Celery Configuration
-CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
-CELERY_BROKER_CONNECTION_RETRY = True
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -72,8 +52,6 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "coachbot",
-    "django_celery_results",
-    "django_celery_beat",
 ]
 
 MIDDLEWARE = [
