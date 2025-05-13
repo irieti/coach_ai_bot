@@ -1121,7 +1121,8 @@ async def new_client_name(update: Update, context: CallbackContext):
 
         context.user_data["selected_client_id"] = new_client.id
         await update.message.reply_text(
-            f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:"
+            f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:",
+            parse_mode="HTML",
         )
         await update_chat_mapping(telegram_id, CLIENT_SURNAME, context.user_data)
         return CLIENT_SURNAME
@@ -1386,7 +1387,8 @@ async def client_name(update: Update, context: CallbackContext):
 
             context.user_data["selected_client_id"] = new_client.id
             await update.message.reply_text(
-                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:"
+                f"Клиент {new_client.name} успешно добавлен!\n<b>Для корректной работы бота заполните все поля анкеты!</b>\nВведите фамилию клиента:",
+                parse_mode="HTML",
             )
             await update_chat_mapping(telegram_id, CLIENT_SURNAME, context.user_data)
             return CLIENT_SURNAME
