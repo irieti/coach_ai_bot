@@ -653,7 +653,7 @@ async def sub_handler(update: Update, context: CallbackContext):
         print(f"mapping found and restored: {mapping.state}")
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     subscription, created = await sync_to_async(Subscription.objects.get_or_create)(
-        customer_key=telegram_id, coach=coach, rebill_id=telegram_id
+        customer_key=telegram_id, coach=coach
     )
     choice = context.user_data.get("subscription_choice")
 
