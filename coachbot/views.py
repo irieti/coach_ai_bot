@@ -143,6 +143,10 @@ LAVA_API_KEY = os.getenv("LAVA_API_KEY")
 
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
+DB_POOL_SEMAPHORE = asyncio.Semaphore(10)
+
+API_SEMAPHORE = asyncio.Semaphore(5)  # Allow up to 5 concurrent API calls
+
 today = now()
 
 logging.basicConfig(level=logging.INFO)
@@ -945,48 +949,100 @@ def get_subscription_keyboard():
     )
 
 
+async def non_blocking_db_operation(func, *args, **kwargs):
+    """Wrapper to make database operations non-blocking"""
+    async with DB_POOL_SEMAPHORE:
+        try:
+            result = await func(*args, **kwargs)
+            return result
+        except Exception as e:
+            logger.error(f"Database operation error: {e}")
+            raise
+
+
 async def main_menu(update: Update, context: CallbackContext):
-    # Получаем telegram_id
+    """Non-blocking implementation of main_menu"""
+    # Get telegram_id
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         telegram_id = query.from_user.id
     else:
         telegram_id = update.message.from_user.id
-
     context.user_data["telegram_id"] = telegram_id
 
-    # Восстанавливаем контекст
-    mapping = await get_chat_mapping(telegram_id)
+    # Create a list of tasks to run concurrently
+    tasks = []
+
+    # Task 1: Restore context
+    tasks.append(get_chat_mapping(telegram_id))
+
+    # Task 2: Get coach
+    get_coach_task = non_blocking_db_operation(
+        sync_to_async(Coach.objects.get), telegram_id=telegram_id
+    )
+    tasks.append(get_coach_task)
+
+    # Run all initial tasks concurrently
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Process results
+    mapping = results[0] if not isinstance(results[0], Exception) else None
+    coach = results[1] if not isinstance(results[1], Exception) else None
+
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
+        logger.info(f"Mapping found and restored: {mapping.state}")
 
-    # Получаем тренера
-    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+    if not coach:
+        logger.error(f"Could not find coach for telegram_id: {telegram_id}")
+        message_task = (
+            update.message.reply_text("Ошибка: тренер не найден.")
+            if hasattr(update, "message")
+            else None
+        )
+        if message_task:
+            asyncio.create_task(message_task)
+        return CHOOSING_ACTION
 
-    # Получаем подписку
+    # Get subscription in non-blocking way
     try:
-        subscription = await get_subscription(coach)
+        subscription = await non_blocking_db_operation(get_subscription, coach)
     except Subscription.DoesNotExist:
         subscription = None
+    except Exception as e:
+        logger.error(f"Error getting subscription: {e}")
+        subscription = None
 
-    # Если подписки нет — предлагаем оплатить
+    # Handle subscription checks
     if not subscription:
-        await update.message.reply_text(
-            "Упс, похоже, что подписка закончилась. Давай выберем подходящий тариф!",
-            reply_markup=get_subscription_keyboard(),
+        reply_task = (
+            update.message.reply_text(
+                "Упс, похоже, что подписка закончилась. Давай выберем подходящий тариф!",
+                reply_markup=get_subscription_keyboard(),
+            )
+            if hasattr(update, "message")
+            else None
         )
-        await update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
+
+        # Run in background, don't block
+        if reply_task:
+            asyncio.create_task(reply_task)
+
+        # Update mapping in background
+        asyncio.create_task(
+            update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
+        )
         return SUBSCRIPTION
 
-    # Проверка на истёкшую подписку (была ли она просрочена на день)
+    # Check for expired subscription
     expires_at = subscription.expires_at
     if expires_at and expires_at.date() <= (datetime.now().date() - timedelta(days=1)):
         subscription.status = "pending"
-        await sync_to_async(subscription.save)()
+        # Save in background
+        asyncio.create_task(non_blocking_db_operation(sync_to_async(subscription.save)))
 
-    # Если подписка активна или ожидает отмены — показываем главное меню
+    # If subscription is active, show main menu
     if subscription.status in ["active", "pending_cancellation"]:
         keyboard = [
             [InlineKeyboardButton("Создать меню для клиента", callback_data="1")],
@@ -1001,7 +1057,6 @@ async def main_menu(update: Update, context: CallbackContext):
             [InlineKeyboardButton("Написать текст для REELS", callback_data="6")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
         text = (
             "<b>Что ты хочешь сделать?:)</b>\n"
             "Дисклеймер: не забывай, что бот — просто помощник. Он может допускать ошибки "
@@ -1010,24 +1065,64 @@ async def main_menu(update: Update, context: CallbackContext):
             "<b>Выбери нужное действие из меню.</b>"
         )
 
+        # Reply without blocking
+        reply_task = None
         if update.callback_query:
-            await query.edit_message_text(
+            reply_task = query.edit_message_text(
                 text, reply_markup=reply_markup, parse_mode="HTML"
             )
         else:
-            await update.message.reply_text(
+            reply_task = update.message.reply_text(
                 text, reply_markup=reply_markup, parse_mode="HTML"
             )
 
+        if reply_task:
+            asyncio.create_task(reply_task)
+
+        # Update state in background
+        asyncio.create_task(
+            update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        )
         return CHOOSING_ACTION
 
-    # Во всех остальных случаях — снова предлагаем оформить подписку
-    await update.message.reply_text(
-        "Упс, похоже, что у тебя ещё нет активной подписки. Давай выберем подходящий тариф!",
-        reply_markup=get_subscription_keyboard(),
+    # If no active subscription, prompt to subscribe
+    reply_task = (
+        update.message.reply_text(
+            "Упс, похоже, что у тебя ещё нет активной подписки. Давай выберем подходящий тариф!",
+            reply_markup=get_subscription_keyboard(),
+        )
+        if hasattr(update, "message")
+        else None
     )
-    await update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
+
+    if reply_task:
+        asyncio.create_task(reply_task)
+
+    # Update state in background
+    asyncio.create_task(
+        update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
+    )
     return SUBSCRIPTION
+
+
+# Rewrite get_subscription to be fully async
+async def get_subscription(coach):
+    """Non-blocking implementation of get_subscription"""
+    async with DB_POOL_SEMAPHORE:
+        try:
+            # Use Django's sync_to_async for all database operations
+            subscription = await sync_to_async(Subscription.objects.filter)(
+                coach=coach, status__in=["active", "pending", "pending_cancellation"]
+            )
+            subscription = await sync_to_async(subscription.first)()
+
+            if not subscription:
+                raise Subscription.DoesNotExist("No active subscription found")
+
+            return subscription
+        except Exception as e:
+            logger.error(f"Error in get_subscription: {e}")
+            raise
 
 
 def get_subscription_keyboard():
@@ -1902,7 +1997,6 @@ async def client_action(update: Update, context: CallbackContext):
 
 
 ############################## NUTRITION PLAN #####################################
-API_SEMAPHORE = asyncio.Semaphore(5)  # Allow up to 5 concurrent API calls
 
 
 async def generate_openai_response(prompt, api_key):
