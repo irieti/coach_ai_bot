@@ -43,9 +43,11 @@ from django.http import HttpResponse
 from openai import OpenAI
 import concurrent.futures
 from functools import partial
+from openai import AsyncOpenAI
 
 load_dotenv()
 
+API_SEMAPHORE = asyncio.Semaphore(5)
 
 MAIN_MENU = 1
 CHOOSING_ACTION = 2
@@ -1900,29 +1902,33 @@ async def client_action(update: Update, context: CallbackContext):
 
 
 ############################## NUTRITION PLAN #####################################
-def _generate_openai_response(prompt, api_key):
-    """Run the OpenAI API call in a separate thread."""
+API_SEMAPHORE = asyncio.Semaphore(5)  # Allow up to 5 concurrent API calls
+
+
+async def generate_openai_response(prompt, api_key):
+    """Make an asynchronous OpenAI API call."""
     try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="gpt-4-turbo",
-        )
-        return response.choices[0].message.content
+        async with API_SEMAPHORE:
+            client = AsyncOpenAI(api_key=api_key)
+            response = await client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="gpt-4-turbo",
+            )
+            return response.choices[0].message.content
     except Exception as e:
         logger.error(f"Error in OpenAI API call: {e}")
         return None
 
 
 async def generate_response(update: Update, context: CallbackContext, send_typing=True):
-    """Asynchronously generate a response from OpenAI using a thread pool."""
+    """Asynchronously generate a response from OpenAI."""
     telegram_id = context.user_data.get("telegram_id")
 
-    # Restore context if available
+    # Create a task for context restoration to make it non-blocking
     mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
+        logger.info(f"Mapping found and restored: {mapping.state}")
     else:
         return None
 
@@ -1940,16 +1946,14 @@ async def generate_response(update: Update, context: CallbackContext, send_typin
             chat_id = update.message.chat_id
 
         if chat_id:
-            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+            # Don't await this, let it run in the background
+            asyncio.create_task(
+                context.bot.send_chat_action(chat_id=chat_id, action="typing")
+            )
 
     try:
-        # Create a partial function with the API key
-        func = partial(_generate_openai_response, prompt, OPENAI_API_KEY)
-
-        # Run the function in the thread pool
-        response_text = await asyncio.get_event_loop().run_in_executor(
-            thread_pool, func
-        )
+        # Make the API call directly with the async function
+        response_text = await generate_openai_response(prompt, OPENAI_API_KEY)
 
         if response_text:
             # Store response in context
@@ -1958,29 +1962,31 @@ async def generate_response(update: Update, context: CallbackContext, send_typin
             messages.append({"role": "assistant", "content": response_text})
             context.user_data["messages"] = messages
 
-            # Update the chat mapping
+            # Update the chat mapping (run as a separate task to avoid blocking)
             current_state = context.user_data.get("state", CHOOSING_ACTION)
-            await update_chat_mapping(telegram_id, current_state, context.user_data)
-
+            asyncio.create_task(
+                update_chat_mapping(telegram_id, current_state, context.user_data)
+            )
             return response_text
         else:
             return None
-
     except Exception as e:
         logger.error(f"Error in generate_response: {e}")
-        return None
-
-    except Exception as e:
-        logger.error(f"Error in generate_response: {e}")
+        message_task = None
         if update.callback_query:
-            await update.callback_query.message.reply_text(
+            message_task = update.callback_query.message.reply_text(
                 "Произошла ошибка при генерации ответа. Попробуйте снова."
             )
         else:
-            await update.message.reply_text(
+            message_task = update.message.reply_text(
                 "Произошла ошибка при генерации ответа. Попробуйте снова."
             )
-            await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+
+        # Run as separate tasks to avoid blocking
+        asyncio.create_task(message_task)
+        asyncio.create_task(
+            update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
+        )
         return CHOOSING_ACTION
 
 
