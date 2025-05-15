@@ -164,6 +164,7 @@ async def handle_ai_response(
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     if content_type == "positioning":
         coach.positioning = response
+        await sync_to_async(coach.save)()
 
     try:
         await waiting_message.delete()
