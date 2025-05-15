@@ -167,18 +167,33 @@ async def handle_ai_response(update: Update, context: CallbackContext, waiting_m
         logger.error(f"Error deleting waiting message: {e}")
 
     if not response:
-        await update.callback_query.message.reply_text("Не удалось сгенерировать план.")
+        # Определяем, откуда пришёл запрос — кнопка или текст
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                "Не удалось сгенерировать план."
+            )
+        elif update.message:
+            await update.message.reply_text("Не удалось сгенерировать план.")
         return
 
     keyboard = [
         [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
     ]
 
-    await update.callback_query.message.reply_text(
-        text=f"Готово:\n\n{response}\n\n",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="HTML",
-    )
+    # Тоже — разделяем кнопку и текст
+    if update.callback_query:
+        await update.callback_query.message.reply_text(
+            text=f"Готово:\n\n{response}\n\n",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML",
+        )
+    elif update.message:
+        await update.message.reply_text(
+            text=f"Готово:\n\n{response}\n\n",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML",
+        )
+
     return MAIN_MENU
 
 
