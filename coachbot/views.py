@@ -2544,6 +2544,8 @@ async def effect(update: Update, context: CallbackContext):
 
     Учитывай, что помимо {field} тренеру также интересны {fields}, и это можно использовать в контенте.  
     - Используй <b> вместо *** и ###
+    - Четко придерживайся формата как в примере
+    - Используй <b>, чтобы выделить главное
     """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, EFFECT, context.user_data)
