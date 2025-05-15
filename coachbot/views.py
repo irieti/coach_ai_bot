@@ -1110,44 +1110,30 @@ async def main_menu(update: Update, context: CallbackContext):
             "<b>Выбери нужное действие из меню.</b>"
         )
 
-        # Reply without blocking
-        reply_task = None
         if update.callback_query:
-            reply_task = query.edit_message_text(
-                text, reply_markup=reply_markup, parse_mode="HTML"
+            query = update.callback_query
+            await query.answer()  # ответить на callback, чтобы не показывалось "часики"
+
+            reply_task = query.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
             )
         else:
             reply_task = update.message.reply_text(
-                text, reply_markup=reply_markup, parse_mode="HTML"
+                text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
             )
 
         if reply_task:
             asyncio.create_task(reply_task)
 
-        # Update state in background
+        # Обновляем состояние
         asyncio.create_task(
             update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         )
         return CHOOSING_ACTION
-
-    # If no active subscription, prompt to subscribe
-    reply_task = (
-        update.message.reply_text(
-            "Упс, похоже, что у тебя ещё нет активной подписки. Давай выберем подходящий тариф!",
-            reply_markup=get_subscription_keyboard(),
-        )
-        if hasattr(update, "message")
-        else None
-    )
-
-    if reply_task:
-        asyncio.create_task(reply_task)
-
-    # Update state in background
-    asyncio.create_task(
-        update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
-    )
-    return SUBSCRIPTION
 
 
 # Rewrite get_subscription to be fully async
