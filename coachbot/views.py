@@ -2123,8 +2123,7 @@ async def creating_plan(update: Update, context: CallbackContext):
             -------------------------  
             <b>День 2 – …</b> (повторить структуру) и так далее {week} тренировок в неделю 
 
-            Добавь рекомендации по технике выполнения и типичные ошибки, которые стоит избегать.  
-            
+            Добавь рекомендации по технике выполнения и типичные ошибки, которые стоит избегать. Разметка HTML            
             """
             await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
 
