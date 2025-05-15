@@ -71,7 +71,6 @@ CREATING_PLAN = 19
 CHOOSING_GOAL = 20
 CREATING_TRAINING = 21
 TRAINING_LEVEL = 22
-MENU_OPTIONS = 23
 EDIT_MENU = 24
 EDIT_MENU_ITEM = 25
 EDIT_PLAN_COMMENT = 27
@@ -85,7 +84,6 @@ DOWNLOAD_PDF = 34
 SOCIAL_MEDIA = 35
 CONTENT_GOAL = 36
 CONTENT_PROMPT = 37
-CONTENT_PROMPT_HANDLER = 38
 CONTENT_SALES = 39
 CONTENT_CHANGE = 40
 TEXT_PROMPT_HANDLER = 41
@@ -157,9 +155,15 @@ logging.basicConfig(
 job_queue = JobQueue()
 
 
-async def handle_ai_response(update: Update, context: CallbackContext, waiting_message):
+async def handle_ai_response(
+    update: Update, context: CallbackContext, waiting_message, content_type
+):
     response = await generate_response(update, context)
     context.user_data["response"] = response
+    telegram_id = context.user_data.get("telegram_id")
+    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
+    if content_type == "positioning":
+        coach.positioning = response
 
     try:
         await waiting_message.delete()
@@ -1616,20 +1620,23 @@ async def client_selection(update: Update, context: CallbackContext):
                 )
 
                 context.user_data["prompt"] = prompt
-                context.user_data["state"] = MENU_OPTIONS
+                context.user_data["state"] = MAIN_MENU
 
-            context.user_data["state"] = MENU_OPTIONS
+            context.user_data["state"] = MAIN_MENU
 
             # Получаем ответ
             waiting_message = await query.message.reply_text(
                 "Минутку, составляю план!🌀"
             )
-            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+            content_type = "menu"
+            await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
 
             # Background task that continues the flow without blocking other users
-            asyncio.create_task(handle_ai_response(update, context, waiting_message))
+            asyncio.create_task(
+                handle_ai_response(update, context, waiting_message, content_type)
+            )
 
-            return MENU_OPTIONS
+            return MAIN_MENU
 
     except Coach.DoesNotExist:
         logger.error("Тренер не найден.")
@@ -1671,10 +1678,13 @@ async def plan_handler(update: Update, context: CallbackContext):
     prompt = await creating_plan(update, context)
     if prompt:
         waiting_message = await query.message.reply_text("Минутку, составляю план!🌀")
-        context.user_data["state"] = MENU_OPTIONS
-        await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-        asyncio.create_task(handle_ai_response(update, context, waiting_message))
-        return MENU_OPTIONS
+        context.user_data["state"] = MAIN_MENU
+        content_type = "menu"
+        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+        asyncio.create_task(
+            handle_ai_response(update, context, waiting_message, content_type)
+        )
+        return MAIN_MENU
 
 
 async def client_surname(update: Update, context: CallbackContext):
@@ -1889,15 +1899,16 @@ async def client_no_products(update: Update, context: CallbackContext):
                 waiting_message = await update.message.reply_text(
                     "Минутку, составляю план!🌀"
                 )
-                context.user_data["state"] = MENU_OPTIONS
-                await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
+                context.user_data["state"] = MAIN_MENU
+                await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+                content_type = "training"
 
                 # Background task that continues the flow without blocking other users
                 asyncio.create_task(
-                    handle_ai_response(update, context, waiting_message)
+                    handle_ai_response(update, context, waiting_message, content_type)
                 )
 
-                return MENU_OPTIONS
+                return MAIN_MENU
 
 
 async def client_calories(update: Update, context: CallbackContext):
@@ -2157,340 +2168,6 @@ async def creating_plan(update: Update, context: CallbackContext):
         )
         await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
         return CHOOSING_ACTION
-
-
-async def menu_options(update: Update, context: CallbackContext):
-    """Handle menu options after plan generation."""
-    logger.info("Starting menu_options function")
-    query = update.callback_query
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    await query.answer()
-
-    plan_type = context.user_data.get("plan_type")
-    logger.info(f"Plan type from context: {plan_type}")
-
-    user_choice = query.data
-    logger.info(f"User choice from callback: {user_choice}")
-
-    try:
-        if user_choice == "main_menu":
-            await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-            return MAIN_MENU
-
-        if user_choice == "edit_menu":
-            logger.info("User chose to edit menu")
-            await query.message.reply_text("Введите ваши пожелания по изменению плана:")
-            await update_chat_mapping(telegram_id, EDIT_PLAN_COMMENT, context.user_data)
-            return EDIT_PLAN_COMMENT
-
-        elif user_choice == "download_pdf":
-            try:
-                print("download_pdf function has started")
-                plan_type = context.user_data.get("plan_type")
-                query = update.callback_query
-                await query.answer()
-
-                plan = context.user_data.get("response")
-                client_id = context.user_data.get("selected_client_id")
-                client = await sync_to_async(Client.objects.get)(id=client_id)
-
-                print(f"Plan: {plan}")
-
-                if not plan:
-                    await query.message.reply_text("План не найден.")
-                    await update_chat_mapping(
-                        telegram_id, MENU_OPTIONS, context.user_data
-                    )
-                    return MENU_OPTIONS
-
-                file_path = generate_plan_pdf(
-                    plan_text=plan,
-                    client_name=client.name,
-                    filename=f"{plan_type}_{client.name}.pdf",
-                )
-
-                if file_path:
-                    with open(file_path, "rb") as file:
-                        await query.message.reply_document(
-                            document=file, filename=file_path
-                        )
-                        await update_chat_mapping(
-                            telegram_id, MAIN_MENU, context.user_data
-                        )
-                        return MAIN_MENU
-                else:
-                    await query.message.reply_text("Возникла ошибка при создании PDF.")
-                    await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-                    return MAIN_MENU
-
-            except Exception as e:
-                print(f"Error in download_plan_pdf: {str(e)}")
-                await query.message.reply_text(
-                    "Произошла ошибка при обработке запроса."
-                )
-                logger.error(f"error:{e}")
-                await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-                return MAIN_MENU
-
-        else:
-            logger.warning(f"Unknown menu option: {user_choice}")
-            await query.message.reply_text("Неизвестный выбор. Попробуйте снова.")
-            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-            return MENU_OPTIONS
-
-    except Exception as e:
-        logger.error(f"Error in menu_options: {e}")
-        await query.message.reply_text("Произошла ошибка. Попробуйте снова.")
-        await update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-        return CHOOSING_ACTION
-
-
-async def edit_plan_comment(update: Update, context: CallbackContext):
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    plan_type = context.user_data.get("plan_type")
-    if not plan_type:
-        await update.message.reply_text("План для редактирования не найден.")
-        # Send a new message for main menu instead of editing
-        keyboard = [
-            [InlineKeyboardButton("Создать меню для клиента", callback_data="1")],
-            [
-                InlineKeyboardButton(
-                    "Создать тренировочную программу", callback_data="2"
-                )
-            ],
-            [InlineKeyboardButton("Создать договор", callback_data="3")],
-            [InlineKeyboardButton("Создать идеи для контента", callback_data="4")],
-            [InlineKeyboardButton("Написать текст/сценарий", callback_data="5")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Что ты хочешь сделать?", reply_markup=reply_markup
-        )
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
-
-    user_comment = update.message.text
-    if not user_comment:
-        await update.message.reply_text(
-            "Пожалуйста, введите текст с вашими пожеланиями."
-        )
-        await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-        return MENU_OPTIONS
-
-    plan = context.user_data.get("response")
-    if not plan:
-        await update.message.reply_text("План не найден. Попробуйте снова.")
-        await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-        return MENU_OPTIONS
-
-    prompt = (
-        f"Вот текущий план для клиента: '{plan}'. "
-        f"На основе следующего комментария обнови план: '{user_comment}'."
-    )
-    context.user_data["prompt"] = prompt
-    await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-
-    waiting_message = await update.message.reply_text("Минутку, составляю план!🌀")
-    context.user_data["state"] = MENU_OPTIONS
-    await update_chat_mapping(telegram_id, EDIT_PLAN_COMMENT, context.user_data)
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    return MENU_OPTIONS
-
-
-class PlanPDF(FPDF):
-    def __init__(self, client_name: str):
-        # Initialize with unicode support and font subsetting
-        super().__init__()
-        # Enable unicode subsetting
-        self.unifontsubset = True
-        self.client_name = client_name
-        self.set_auto_page_break(auto=True, margin=15)
-
-        # Set the font path - using a relative path is safer
-        font_path = "/var/www/django_telegram_bot/coach_ai_bot/coachbot/static/fonts"
-
-        # Add DejaVu fonts with Unicode support
-        self.add_font(
-            "DejaVu",
-            style="",
-            fname=os.path.join(font_path, "DejaVuSansCondensed.ttf"),
-            uni=True,
-        )
-        self.add_font(
-            "DejaVu",
-            style="B",
-            fname=os.path.join(font_path, "DejaVuSansCondensed-Bold.ttf"),
-            uni=True,
-        )
-        # Set default font
-        self.set_font("DejaVu", size=12)
-
-    def header(self):
-        self.set_y(10)
-
-        # Gradient title colors
-        colors = [
-            (88, 43, 232),  # Purple
-            (199, 56, 209),  # Pink
-            (249, 89, 89),  # Coral
-        ]
-
-        self.set_font("DejaVu", "B", 24)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font("DejaVu", "", 8)
-        self.set_text_color(128, 128, 128)
-        self.cell(0, 10, f"Страница {self.page_no()}", align="C")
-
-    def add_section_title(self, title: str):
-        """Add a section title with proper formatting"""
-        self.set_font("DejaVu", "B", 14)
-        self.set_text_color(88, 43, 232)
-        self.cell(0, 10, title, ln=True)
-        self.ln(5)
-
-    def add_content_line(self, text: str, indent: bool = False):
-        """Add a line of content with proper formatting"""
-        self.set_text_color(0, 0, 0)
-        self.set_font("DejaVu", "", 12)
-
-        if indent:
-            self.cell(10)  # Add indent
-
-        self.multi_cell(0, 6, text)
-        self.ln(2)
-
-
-def parse_html_tags(text: str) -> tuple[str, bool]:
-    """Parse HTML-style bold tags and return clean text and whether it was bold"""
-    is_bold = False
-    if "<b>" in text and "</b>" in text:
-        is_bold = True
-        text = text.replace("<b>", "").replace("</b>", "")
-    return text, is_bold
-
-
-def generate_plan_pdf(
-    plan_text: str, client_name: str, filename: str = "plan.pdf"
-) -> str:
-    """
-    Generate PDF from plan text (either meal or training plan)
-
-    Args:
-        plan_text: Raw plan text with HTML-style formatting
-        client_name: Name of the client
-        filename: Output filename
-    """
-    try:
-        plans_folder = os.path.join(os.path.dirname(__file__), "plans")
-        os.makedirs(plans_folder, exist_ok=True)
-
-        file_path = os.path.join(plans_folder, filename)
-
-        pdf = PlanPDF(client_name)
-        pdf.add_page()
-
-        # Split plan into lines and process each line
-        lines = plan_text.strip().split("\n")
-        current_section = ""
-
-        for line in lines:
-            if not line.strip():
-                continue
-
-            text, is_bold = parse_html_tags(line)
-
-            # Check if this is a new section (variant or day)
-            if text.startswith("Вариант") or text.startswith("День"):
-                current_section = text
-                pdf.add_section_title(text)
-                continue
-
-            # Handle meal plan format
-            if ":" in text:
-                # Split into title and content
-                title_part, content_part = text.split(":", 1)
-
-                # Add title (e.g., "Завтрак", "Обед", etc.)
-                pdf.set_font("DejaVu", "B", 12)
-                pdf.set_text_color(0, 0, 0)
-                pdf.cell(0, 6, f"{title_part.strip()}:", ln=True)
-
-                # Add content
-                pdf.set_font("DejaVu", "", 12)
-                pdf.multi_cell(0, 6, content_part.strip())
-                pdf.ln(2)
-            else:
-                # For lines without colon (like exercise descriptions)
-                pdf.add_content_line(text, indent=True)
-
-        pdf.output(file_path)
-        return file_path
-
-    except Exception as e:
-        print(f"Error generating PDF: {str(e)}")
-        raise
-
-
-async def download_plan_pdf(update: Update, context: CallbackContext):
-    try:
-        print("download_pdf function has started")
-        query = update.callback_query
-        telegram_id = context.user_data.get("telegram_id")
-        mapping = await get_chat_mapping(telegram_id)
-        if mapping and mapping.context:
-            context.user_data.update(mapping.context)
-            print(f"mapping found and restored: {mapping.state}")
-        else:
-            return MAIN_MENU
-        await query.answer()
-        plan_type = context.user_data.get("plan_type")
-
-        plan = context.user_data.get(plan_type)
-        client_id = context.user_data.get("selected_client_id")
-        client = await sync_to_async(Client.objects.get)(id=client_id)
-
-        print(f"Plan: {plan}")
-
-        if not plan:
-            await query.message.reply_text("План не найден.")
-            await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
-            return MENU_OPTIONS
-
-        file_path = generate_plan_pdf(
-            plan_text=plan,
-            client_name=client.name,
-            filename=f"{plan_type}_{client.name}.pdf",
-        )
-
-        if file_path:
-            with open(file_path, "rb") as file:
-                await query.message.reply_document(document=file, filename=file_path)
-            await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-            return MAIN_MENU
-        else:
-            await query.message.reply_text("Возникла ошибка при создании PDF.")
-            await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-            return MAIN_MENU
-
-    except Exception as e:
-        print(f"Error in download_plan_pdf: {str(e)}")
-        logger.error(f"error: {e}")
-        await query.message.reply_text("Произошла ошибка при обработке запроса.")
-        return MAIN_MENU
 
 
 ############################## NUTRITION PLAN #####################################
@@ -2865,109 +2542,21 @@ async def effect(update: Update, context: CallbackContext):
     Дай рекомендации по площадкам (Instagram, Telegram, YouTube и др.), объясни, какой контент лучше всего подойдет для каждой платформы и как их комбинировать для максимального эффекта.  
 
     Учитывай, что помимо {field} тренеру также интересны {fields}, и это можно использовать в контенте.  
+    - Используй <b> вместо *** и ###
     """
     context.user_data["prompt"] = prompt
-    await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
+    await update_chat_mapping(telegram_id, EFFECT, context.user_data)
 
     waiting_message = await update.message.reply_text(
         "Опрашиваю маркетологов, одну минутку!🌀"
     )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    telegram_id = context.user_data.get("telegram_id")
-    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
-    await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
-    return POSITIONING
-
-
-async def positioning(update: Update, context: CallbackContext):
-    query = update.callback_query
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    await query.answer()
-    telegram_id = context.user_data.get("telegram_id")
-    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
-    response = context.user_data.get("response")
-
-    pos_choice = query.data
-    if pos_choice == "edit_pos":
-        await update.effective_chat.send_message("Что вы хотели бы изменить/добавить?")
-        await update_chat_mapping(telegram_id, EDIT_POS_HANDLER, context.user_data)
-
-        return EDIT_POS_HANDLER
-
-    elif pos_choice == "save_pos":
-        coach.positioning = response
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "Создать контент-план", callback_data="content_plan"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "Вернуться в главное меню", callback_data="main_menu"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.effective_chat.send_message(
-            "Что хотите сделать дальше?", reply_markup=reply_markup, parse_mode="HTML"
-        )
-        await update_chat_mapping(telegram_id, SAVE_POS_HANDLER, context.user_data)
-        return SAVE_POS_HANDLER
-
-
-async def edit_pos_handler(update: Update, context: CallbackContext):
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    comment = update.message.text.strip()
-    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
-    response = context.user_data.get("response")
-    prompt = f"""
-    Это позиционирование и стратегия, которые ты составил для тренера {coach} - {response}, измени его в соответсвие с этим комменатрием {comment}"
-    """
-    context.user_data["prompt"] = prompt
-    waiting_message = await update.message.reply_text(
-        "Опрашиваю маркетологов, одну минутку!🌀"
+    context.user_data["state"] = MAIN_MENU
+    content_type = "positioning"
+    asyncio.create_task(
+        handle_ai_response(update, context, waiting_message, content_type)
     )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-
-    await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
-    return POSITIONING
-
-
-async def save_pos_handler(update: Update, context: CallbackContext):
-    query = update.callback_query
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    await query.answer()
-
-    pos_choice = query.data
-    if pos_choice == "main_menu":
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
-
-    elif pos_choice == "content_plan":
-        await query.edit_message_text("В какую соц сеть будем делать контент-план?")
-        await update_chat_mapping(telegram_id, CONTENT_GOAL, context.user_data)
-        return CONTENT_GOAL
+    await update_chat_mapping(telegram_id, EFFECT, context.user_data)
+    return MAIN_MENU
 
 
 ############################## CONTENT CREATION ###################################
@@ -3069,6 +2658,8 @@ async def content_prompt(update: Update, context: CallbackContext):
 - Подбирай темы, которые вызывают отклик и вовлекают подписчиков.  
 - Если контент в инстаграм - бери только(!) рилс и посты-карусели, если телеграм - посты, кружочки и аудиоподкасты, если ютуб - шортс и видео и тд)
 - Сделай план удобным для реализации, чтобы можно было сразу использовать его в работе.  
+- Четко следуй формату по примеру
+- Используй <b> вместо ***
 """
 
         context.user_data["prompt"] = prompt
@@ -3076,58 +2667,17 @@ async def content_prompt(update: Update, context: CallbackContext):
     waiting_message = await update.message.reply_text(
         "Опрашиваю аудиторию, одну минутку!🌀"
     )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    await update_chat_mapping(telegram_id, CONTENT_PROMPT_HANDLER, context.user_data)
+    context.user_data["state"] = MAIN_MENU
+    content_type = "content"
+    asyncio.create_task(
+        handle_ai_response(update, context, waiting_message, content_type)
+    )
+    await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
 
     if content_goal == "sales":
         await query.edit_message_text("Расскажите подробно о своей услуге/продукте")
         await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
         return CONTENT_SALES
-
-
-async def content_prompt_handler(update: Update, context: CallbackContext):
-    query = update.callback_query
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    await query.answer()
-
-    if query.data == "main_menu":
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
-
-    content_change = query.data
-    if content_change == "yes":
-        await query.message.reply_text("Что вы хотели бы добавить/изменить?")
-        await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
-        return CONTENT_CHANGE
-
-
-async def content_change(update: Update, context: CallbackContext):
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    content_change = update.message.text.strip()
-    content = context.user_data.get("content")
-
-    prompt = f"Это сгенерированный контент план для тренера {content}, скорректируй его на основе этого комментария {content_change}"
-    context.user_data["prompt"] = prompt
-    await update_chat_mapping(telegram_id, CONTENT_CHANGE, context.user_data)
-    waiting_message = await update.message.reply_text("Одну минутку!🌀")
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-
-    await update_chat_mapping(telegram_id, CONTENT_PROMPT_HANDLER, context.user_data)
-    return CONTENT_PROMPT_HANDLER
 
 
 async def content_sales(update: Update, context: CallbackContext):
@@ -3176,14 +2726,19 @@ async def content_sales(update: Update, context: CallbackContext):
         - Предложи разные форматы контента (для инстаграма - только (!) рилс и посты-карусели, для телеграма - посты, кружочки и аудмоподкасты и тд).  
 
         Составь этот контент-план в понятном формате, чтобы его можно было сразу использовать в работе.  
+        - Четко следуй формату по примеру
+        - Используй <b> вместо ***
         """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
     waiting_message = await update.message.reply_text("Одну минутку!🌀")
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    await update_chat_mapping(telegram_id, CONTENT_PROMPT_HANDLER, context.user_data)
-    return CONTENT_PROMPT_HANDLER
+    context.user_data["state"] = MAIN_MENU
+    content_type = "content"
+    asyncio.create_task(
+        handle_ai_response(update, context, waiting_message, content_type)
+    )
+    await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
+    return MAIN_MENU
 
 
 #################################################################################
@@ -3223,57 +2778,21 @@ async def text_generation(update: Update, context: CallbackContext):
 - Не используй формальности и клише.
 - Текст должен быть цельным, глубоким и сразу готовым к публикации.
 - Используй <b> вместо ***
+- Четко следуй формату по примеру
 """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
     waiting_message = await update.message.reply_text(
         "Минутку! Опрашиваю тысячу копирайтеров!🌀"
     )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
+    context.user_data["state"] = MAIN_MENU
+    content_type = "post"
+    asyncio.create_task(
+        handle_ai_response(update, context, waiting_message, content_type)
+    )
 
     await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
     return MAIN_MENU
-
-
-async def text_prompt_handler(update: Update, context: CallbackContext):
-    query = update.callback_query
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    await query.answer()
-
-    text_change = query.data
-    if text_change == "yes":
-        await query.edit_message_text("Что вы хотели бы добавить/изменить?")
-        await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
-        return TEXT_CHANGE
-
-
-async def text_change(update: Update, context: CallbackContext):
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    text_change = update.message.text.strip()
-    text = context.user_data.get("text")
-    prompt = f"Это сгенерированный текст пользователя {text}, измени его с учетом следубщих комментариев {text_change} и сделай снова три варианта меню"
-    context.user_data["prompt"] = prompt
-    await update_chat_mapping(telegram_id, TEXT_CHANGE, context.user_data)
-    waiting_message = await update.message.reply_text(
-        "Минутку! Снова опрашиваю тысячу копирайтеров!🌀"
-    )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
-    return TEXT_PROMPT_HANDLER
 
 
 async def reels_generation(update: Update, context: CallbackContext):
@@ -3315,51 +2834,13 @@ async def reels_generation(update: Update, context: CallbackContext):
     waiting_message = await update.message.reply_text(
         "Минутку! Опрашиваю тысячу рилсмейкеров!🌀"
     )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
+    context.user_data["state"] = MAIN_MENU
+    content_type = "reels"
+    asyncio.create_task(
+        handle_ai_response(update, context, waiting_message, content_type)
+    )
     await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
     return MAIN_MENU
-
-
-async def reels_prompt_handler(update: Update, context: CallbackContext):
-    query = update.callback_query
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    await query.answer()
-
-    text_change = query.data
-    if text_change == "yes":
-        await query.edit_message_text("Что вы хотели бы добавить/изменить?")
-        await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
-        return REELS_CHANGE
-
-
-async def reels_change(update: Update, context: CallbackContext):
-    telegram_id = context.user_data.get("telegram_id")
-    mapping = await get_chat_mapping(telegram_id)
-    if mapping and mapping.context:
-        context.user_data.update(mapping.context)
-        print(f"mapping found and restored: {mapping.state}")
-    else:
-        return MAIN_MENU
-    text_change = update.message.text.strip()
-    text = context.user_data.get("text")
-    prompt = f"Это сгенерированный текст пользователя {text}, измени его с учетом следубщих комментариев {text_change}"
-    context.user_data["prompt"] = prompt
-    await update_chat_mapping(telegram_id, REELS_CHANGE, context.user_data)
-    await update.message.reply_text("Минутку! Снова опрашиваю тысячу рилсмейкеров!🌀")
-    waiting_message = await update.message.reply_text(
-        "Минутку! Снова опрашиваю тысячу рилсмейкеров!🌀"
-    )
-    context.user_data["state"] = MENU_OPTIONS
-    asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
-    return REELS_PROMPT_HANDLER
 
 
 async def get_clients(update: Update, context: CallbackContext):
@@ -3936,12 +3417,6 @@ def main():
                 CallbackQueryHandler(creating_plan),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
-            MENU_OPTIONS: [
-                CallbackQueryHandler(menu_options),
-            ],
-            EDIT_PLAN_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_plan_comment)
-            ],
             CHOOSING_GOAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_training_goal)
             ],
@@ -3955,10 +3430,6 @@ def main():
             ],
             PLAN_HANDLER: [
                 CallbackQueryHandler(plan_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            DOWNLOAD_PDF: [
-                CallbackQueryHandler(download_plan_pdf),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             GET_POS: [
@@ -3988,17 +3459,6 @@ def main():
             ONLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, online)],
             EFFECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, effect)],
             FIELDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, fields)],
-            POSITIONING: [
-                CallbackQueryHandler(positioning),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            EDIT_POS_HANDLER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pos_handler)
-            ],
-            SAVE_POS_HANDLER: [
-                CallbackQueryHandler(save_pos_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
             SOCIAL_MEDIA: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, social_media),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
@@ -4011,24 +3471,8 @@ def main():
                 CallbackQueryHandler(content_prompt),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
-            CONTENT_PROMPT_HANDLER: [
-                CallbackQueryHandler(content_prompt_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
             CONTENT_SALES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, content_sales),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            CONTENT_CHANGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, content_change),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            TEXT_PROMPT_HANDLER: [
-                CallbackQueryHandler(text_prompt_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            TEXT_CHANGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, text_change),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             TEXT_GENERATION: [
@@ -4070,14 +3514,6 @@ def main():
             ],
             CANCEL_SUB_HANDLER: [
                 CallbackQueryHandler(cancel_subscription_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            REELS_PROMPT_HANDLER: [
-                CallbackQueryHandler(reels_prompt_handler),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            REELS_CHANGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, reels_change),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             REELS_GENERATION: [
