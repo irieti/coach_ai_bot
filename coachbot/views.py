@@ -1616,17 +1616,13 @@ async def client_selection(update: Update, context: CallbackContext):
 
             if prompt:
 
-                waiting_message = await query.message.reply_text(
-                    "Минутку, составляю план!🌀"
-                )
-
                 context.user_data["prompt"] = prompt
                 context.user_data["state"] = MAIN_MENU
 
             context.user_data["state"] = MAIN_MENU
 
             # Получаем ответ
-            waiting_message = await query.message.reply_text(
+            waiting_message = await update.callback_query.message.reply_text(
                 "Минутку, составляю план!🌀"
             )
             content_type = "menu"
@@ -2667,7 +2663,7 @@ async def content_prompt(update: Update, context: CallbackContext):
 
         context.user_data["prompt"] = prompt
         await update_chat_mapping(telegram_id, CONTENT_PROMPT, context.user_data)
-    waiting_message = await update.message.reply_text(
+    waiting_message = await update.callback_query.message.reply_text(
         "Опрашиваю аудиторию, одну минутку!🌀"
     )
     context.user_data["state"] = MAIN_MENU
