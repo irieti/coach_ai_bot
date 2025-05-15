@@ -1614,11 +1614,6 @@ async def client_selection(update: Update, context: CallbackContext):
             # Background task that continues the flow without blocking other users
             asyncio.create_task(handle_ai_response(update, context, waiting_message))
 
-            try:
-                await waiting_message.delete()
-            except Exception as e:
-                logger.error(f"Error deleting waiting message: {e}")
-
             return MENU_OPTIONS
 
     except Coach.DoesNotExist:
@@ -1664,11 +1659,7 @@ async def plan_handler(update: Update, context: CallbackContext):
         context.user_data["state"] = MENU_OPTIONS
         await update_chat_mapping(telegram_id, MENU_OPTIONS, context.user_data)
         asyncio.create_task(handle_ai_response(update, context, waiting_message))
-        try:
-            await waiting_message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting waiting message: {e}")
-            return MENU_OPTIONS
+        return MENU_OPTIONS
 
 
 async def client_surname(update: Update, context: CallbackContext):
@@ -1891,11 +1882,7 @@ async def client_no_products(update: Update, context: CallbackContext):
                     handle_ai_response(update, context, waiting_message)
                 )
 
-                try:
-                    await waiting_message.delete()
-                except Exception as e:
-                    logger.error(f"Error deleting waiting message: {e}")
-                    return MENU_OPTIONS
+                return MENU_OPTIONS
 
 
 async def client_calories(update: Update, context: CallbackContext):
@@ -2305,11 +2292,7 @@ async def edit_plan_comment(update: Update, context: CallbackContext):
     context.user_data["state"] = MENU_OPTIONS
     await update_chat_mapping(telegram_id, EDIT_PLAN_COMMENT, context.user_data)
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        return MENU_OPTIONS
+    return MENU_OPTIONS
 
 
 class PlanPDF(FPDF):
@@ -2877,10 +2860,6 @@ async def effect(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
     telegram_id = context.user_data.get("telegram_id")
     coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
     await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
@@ -2950,12 +2929,9 @@ async def edit_pos_handler(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
-        return POSITIONING
+
+    await update_chat_mapping(telegram_id, POSITIONING, context.user_data)
+    return POSITIONING
 
 
 async def save_pos_handler(update: Update, context: CallbackContext):
@@ -3088,14 +3064,7 @@ async def content_prompt(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(
-            telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
-        )
-        return CONTENT_PROMPT_HANDLER
+    await update_chat_mapping(telegram_id, CONTENT_PROMPT_HANDLER, context.user_data)
 
     if content_goal == "sales":
         await query.edit_message_text("Расскажите подробно о своей услуге/продукте")
@@ -3142,14 +3111,9 @@ async def content_change(update: Update, context: CallbackContext):
     waiting_message = await update.message.reply_text("Одну минутку!🌀")
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(
-            telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
-        )
-        return CONTENT_PROMPT_HANDLER
+
+    await update_chat_mapping(telegram_id, CONTENT_PROMPT_HANDLER, context.user_data)
+    return CONTENT_PROMPT_HANDLER
 
 
 async def content_sales(update: Update, context: CallbackContext):
@@ -3204,14 +3168,8 @@ async def content_sales(update: Update, context: CallbackContext):
     waiting_message = await update.message.reply_text("Одну минутку!🌀")
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(
-            telegram_id, CONTENT_PROMPT_HANDLER, context.user_data
-        )
-        return CONTENT_PROMPT_HANDLER
+    await update_chat_mapping(telegram_id, CONTENT_PROMPT_HANDLER, context.user_data)
+    return CONTENT_PROMPT_HANDLER
 
 
 #################################################################################
@@ -3259,16 +3217,9 @@ async def text_generation(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
-        return TEXT_PROMPT_HANDLER
-    else:
-        await update.message.reply_text("Произошла ошибка, попробуйте снова")
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
+
+    await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+    return MAIN_MENU
 
 
 async def text_prompt_handler(update: Update, context: CallbackContext):
@@ -3307,16 +3258,8 @@ async def text_change(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
-        return TEXT_PROMPT_HANDLER
-    else:
-        await update.message.reply_text("Произошла ошибка, попробуйте снова")
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
+    await update_chat_mapping(telegram_id, TEXT_PROMPT_HANDLER, context.user_data)
+    return TEXT_PROMPT_HANDLER
 
 
 async def reels_generation(update: Update, context: CallbackContext):
@@ -3360,16 +3303,8 @@ async def reels_generation(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
-        return REELS_PROMPT_HANDLER
-    else:
-        await update.message.reply_text("Произошла ошибка, попробуйте снова")
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
+    await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
+    return MAIN_MENU
 
 
 async def reels_prompt_handler(update: Update, context: CallbackContext):
@@ -3409,16 +3344,8 @@ async def reels_change(update: Update, context: CallbackContext):
     )
     context.user_data["state"] = MENU_OPTIONS
     asyncio.create_task(handle_ai_response(update, context, waiting_message))
-    try:
-        await waiting_message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting waiting message: {e}")
-        await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
-        return REELS_PROMPT_HANDLER
-    else:
-        await update.message.reply_text("Произошла ошибка, попробуйте снова")
-        await update_chat_mapping(telegram_id, MAIN_MENU, context.user_data)
-        return MAIN_MENU
+    await update_chat_mapping(telegram_id, REELS_PROMPT_HANDLER, context.user_data)
+    return REELS_PROMPT_HANDLER
 
 
 async def get_clients(update: Update, context: CallbackContext):
