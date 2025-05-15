@@ -2658,7 +2658,7 @@ async def content_prompt(update: Update, context: CallbackContext):
 - Если контент в инстаграм - бери только(!) рилс и посты-карусели, если телеграм - посты, кружочки и аудиоподкасты, если ютуб - шортс и видео и тд)
 - Сделай план удобным для реализации, чтобы можно было сразу использовать его в работе.  
 - Четко следуй формату по примеру
-- Используй <b> вместо ***
+- Используй <b> чтобы выделить жирным акценты
 """
 
         context.user_data["prompt"] = prompt
@@ -2727,6 +2727,7 @@ async def content_sales(update: Update, context: CallbackContext):
         Составь этот контент-план в понятном формате, чтобы его можно было сразу использовать в работе.  
         - Четко следуй формату по примеру
         - Используй <b> вместо ***
+        - Используй <b> чтобы выделить жирным акценты
         """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, CONTENT_SALES, context.user_data)
@@ -2778,6 +2779,7 @@ async def text_generation(update: Update, context: CallbackContext):
 - Текст должен быть цельным, глубоким и сразу готовым к публикации.
 - Используй <b> вместо ***
 - Четко следуй формату по примеру
+- Используй <b> чтобы выделить жирным акценты
 """
     context.user_data["prompt"] = prompt
     await update_chat_mapping(telegram_id, TEXT_GENERATION, context.user_data)
@@ -2825,6 +2827,7 @@ async def reels_generation(update: Update, context: CallbackContext):
 - Без хештегов и смайликов
 
 Финальный текст должен быть структурирован и легко читаем.
+- Используй <b> чтобы выделить жирным акценты
 
 """
 
