@@ -1006,88 +1006,47 @@ async def non_blocking_db_operation(func, *args, **kwargs):
 
 
 async def main_menu(update: Update, context: CallbackContext):
-    """Non-blocking implementation of main_menu"""
-    # Get telegram_id
+    # Получаем telegram_id
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         telegram_id = query.from_user.id
     else:
         telegram_id = update.message.from_user.id
+
     context.user_data["telegram_id"] = telegram_id
 
-    # Create a list of tasks to run concurrently
-    tasks = []
-
-    # Task 1: Restore context
-    tasks.append(get_chat_mapping(telegram_id))
-
-    # Task 2: Get coach
-    get_coach_task = non_blocking_db_operation(
-        sync_to_async(Coach.objects.get), telegram_id=telegram_id
-    )
-    tasks.append(get_coach_task)
-
-    # Run all initial tasks concurrently
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Process results
-    mapping = results[0] if not isinstance(results[0], Exception) else None
-    coach = results[1] if not isinstance(results[1], Exception) else None
-
+    # Восстанавливаем контекст
+    mapping = await get_chat_mapping(telegram_id)
     if mapping and mapping.context:
         context.user_data.update(mapping.context)
-        logger.info(f"Mapping found and restored: {mapping.state}")
+        print(f"mapping found and restored: {mapping.state}")
 
-    if not coach:
-        logger.error(f"Could not find coach for telegram_id: {telegram_id}")
-        message_task = (
-            update.message.reply_text("Ошибка: тренер не найден.")
-            if hasattr(update, "message")
-            else None
-        )
-        if message_task:
-            asyncio.create_task(message_task)
-        return CHOOSING_ACTION
+    # Получаем тренера
+    coach = await sync_to_async(Coach.objects.get)(telegram_id=telegram_id)
 
-    # Get subscription in non-blocking way
+    # Получаем подписку
     try:
-        subscription = await non_blocking_db_operation(get_subscription, coach)
+        subscription = await get_subscription(coach)
     except Subscription.DoesNotExist:
         subscription = None
-    except Exception as e:
-        logger.error(f"Error getting subscription: {e}")
-        subscription = None
 
-    # Handle subscription checks
+    # Если подписки нет — предлагаем оплатить
     if not subscription:
-        reply_task = (
-            update.message.reply_text(
-                "Упс, похоже, что подписка закончилась. Давай выберем подходящий тариф!",
-                reply_markup=get_subscription_keyboard(),
-            )
-            if hasattr(update, "message")
-            else None
+        await update.message.reply_text(
+            "Упс, похоже, что подписка закончилась. Давай выберем подходящий тариф!",
+            reply_markup=get_subscription_keyboard(),
         )
-
-        # Run in background, don't block
-        if reply_task:
-            asyncio.create_task(reply_task)
-
-        # Update mapping in background
-        asyncio.create_task(
-            update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
-        )
+        await update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
         return SUBSCRIPTION
 
-    # Check for expired subscription
+    # Проверка на истёкшую подписку (была ли она просрочена на день)
     expires_at = subscription.expires_at
     if expires_at and expires_at.date() <= (datetime.now().date() - timedelta(days=1)):
         subscription.status = "pending"
-        # Save in background
-        asyncio.create_task(non_blocking_db_operation(sync_to_async(subscription.save)))
+        await sync_to_async(subscription.save)()
 
-    # If subscription is active, show main menu
+    # Если подписка активна или ожидает отмены — показываем главное меню
     if subscription.status in ["active", "pending_cancellation"]:
         keyboard = [
             [InlineKeyboardButton("Создать меню для клиента", callback_data="1")],
@@ -1102,6 +1061,7 @@ async def main_menu(update: Update, context: CallbackContext):
             [InlineKeyboardButton("Написать текст для REELS", callback_data="6")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+
         text = (
             "<b>Что ты хочешь сделать?:)</b>\n"
             "Дисклеймер: не забывай, что бот — просто помощник. Он может допускать ошибки "
@@ -1111,29 +1071,23 @@ async def main_menu(update: Update, context: CallbackContext):
         )
 
         if update.callback_query:
-            query = update.callback_query
-            await query.answer()  # ответить на callback, чтобы не показывалось "часики"
-
-            reply_task = query.message.reply_text(
-                text,
-                reply_markup=reply_markup,
-                parse_mode="HTML",
+            await query.edit_message_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
             )
         else:
-            reply_task = update.message.reply_text(
-                text,
-                reply_markup=reply_markup,
-                parse_mode="HTML",
+            await update.message.reply_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
             )
 
-        if reply_task:
-            asyncio.create_task(reply_task)
-
-        # Обновляем состояние
-        asyncio.create_task(
-            update_chat_mapping(telegram_id, CHOOSING_ACTION, context.user_data)
-        )
         return CHOOSING_ACTION
+
+    # Во всех остальных случаях — снова предлагаем оформить подписку
+    await update.message.reply_text(
+        "Упс, похоже, что у тебя ещё нет активной подписки. Давай выберем подходящий тариф!",
+        reply_markup=get_subscription_keyboard(),
+    )
+    await update_chat_mapping(telegram_id, SUBSCRIPTION, context.user_data)
+    return SUBSCRIPTION
 
 
 # Rewrite get_subscription to be fully async
