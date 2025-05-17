@@ -731,7 +731,7 @@ async def sub_handler(update: Update, context: CallbackContext):
             ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
+        await query.edit_message_text(
             "Привет! Я бот, который может <b>создавать программы питания и тренировок</b> для твоих клиентов, <b>определить твое позиционирование, создать контент-план, тексты и сценарии для рилс,</b> а еще я обладаю большой базой знаний для тренеров.\n"
             "<b>Бот использует ИИ</b>, поэтому подписка платная, но он сэкономит тебе часы работы!\n<b>Выбери подходящий тариф</b>\n"
             "<a href='https://www.basetraining.site/bot-offer'>ОФЕРТА</a>, <a href='https://www.basetraining.site/policy'>Политика конфиденциальности</a>.",
