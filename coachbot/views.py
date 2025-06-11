@@ -3272,7 +3272,7 @@ async def error_handler(update: Update, context: CallbackContext):
         await reset_conversation_state(telegram_id)
 
         # Send an error message to the user
-        text = "Извините, произошла ошибка. Пожалуйста, начните заново с команды /menu"
+        text = "Извините, произошла ошибка. Пожалуйста, начните заново с Меню - Главное меню"
 
         if update.callback_query:
             await update.callback_query.message.reply_text(text)
