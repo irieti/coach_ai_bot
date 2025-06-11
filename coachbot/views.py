@@ -181,21 +181,15 @@ async def handle_ai_response(
             await update.message.reply_text("Не удалось сгенерировать план.")
         return
 
-    keyboard = [
-        [InlineKeyboardButton("Назад в меню", callback_data="main_menu")],
-    ]
-
     # Тоже — разделяем кнопку и текст
     if update.callback_query:
         await update.callback_query.message.reply_text(
             text=f"Готово:\n\n{response}\n\n",
-            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML",
         )
     elif update.message:
         await update.message.reply_text(
             text=f"Готово:\n\n{response}\n\n",
-            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML",
         )
 
@@ -323,6 +317,8 @@ def lava_webhook(request):
         if "clientUtm" in data and "telegram_id" in data["clientUtm"]:
             webhook_telegram_id = data["clientUtm"]["telegram_id"]
 
+        print(f"webhook_telegram_id: {webhook_telegram_id}")
+
         logger.info(
             f"Event type: {event_type}, Status: {status}, Contract ID: {contract_id}"
         )
@@ -356,9 +352,7 @@ def lava_webhook(request):
             # If we found the subscription by email, get the coach's telegram_id
             if hasattr(subscription, "coach") and subscription.coach:
                 telegram_id = subscription.coach.telegram_id
-                logger.info(
-                    f"Found telegram_id {telegram_id} from subscription's coach"
-                )
+                print(f"Found telegram_id {telegram_id} from subscription's coach")
 
         # Process subscription based on webhook event type
         with transaction.atomic():
@@ -432,6 +426,7 @@ def send_telegram_message(telegram_id, message):
     """
     Функция для отправки сообщения в Telegram
     """
+    print(f"Sending Telegram message to {telegram_id}: {message}")
     bot = Bot(token=BOT_TOKEN)
     try:
         asyncio.run(bot.send_message(chat_id=telegram_id, text=message))
@@ -886,12 +881,6 @@ async def cancel_subscription(update: Update, context: CallbackContext):
             InlineKeyboardButton(
                 "Да, отменить",
                 callback_data="yes",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "Назад в меню",
-                callback_data="main_menu",
             ),
         ],
     ]

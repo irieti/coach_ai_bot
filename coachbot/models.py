@@ -14,7 +14,7 @@ class Coach(models.Model):
 
 
 class Subscription(models.Model):
-    rebill_id = models.CharField(max_length=255, unique=True, blank=True)
+    rebill_id = models.CharField(max_length=255, blank=True)
     subscription_id = models.CharField(max_length=255, blank=True, null=True)
     email = models.EmailField(null=True, blank=True)
     payment_id = models.CharField(max_length=255, blank=True, null=True)
